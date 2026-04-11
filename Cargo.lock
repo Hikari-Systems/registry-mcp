@@ -1222,6 +1222,7 @@ dependencies = [
  "bollard",
  "futures-util",
  "hs-utils",
+ "http",
  "reqwest",
  "rmcp",
  "schemars 1.2.1",

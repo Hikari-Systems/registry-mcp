@@ -16,7 +16,8 @@ rmcp               = { version = "1.4.0", features = ["server", "transport-strea
 axum               = { version = "0.8", features = ["http1", "tokio"] }
 tokio              = { version = "1", features = ["full"] }
 tokio-util         = "0.7"
-tower-http         = { version = "0.6", features = ["trace"] }
+tower-http         = { version = "0.6", features = ["trace", "cors"] }
+http               = "1"
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
 schemars           = "1"

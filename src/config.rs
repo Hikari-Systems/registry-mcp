@@ -16,6 +16,22 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(deserialize_with = "deser_u16_or_str")]
     pub port: u16,
+    /// Semicolon-separated list of hosts allowed in the HTTP Host header
+    /// (DNS rebinding protection). Empty string disables the check entirely.
+    #[serde(rename = "allowedHosts", default, deserialize_with = "deser_semicolon_list")]
+    pub allowed_hosts: Vec<String>,
+    /// Semicolon-separated list of origins allowed in CORS preflight responses.
+    /// Empty string disables CORS headers.
+    #[serde(rename = "allowedOrigins", default, deserialize_with = "deser_semicolon_list")]
+    pub allowed_origins: Vec<String>,
+}
+
+fn deser_semicolon_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    Ok(s.split(';').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect())
 }
 
 #[derive(Debug, Deserialize, Clone)]

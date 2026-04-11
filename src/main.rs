@@ -2,7 +2,7 @@ use registry_mcp::{config, registry, tools};
 
 use std::{net::TcpStream, sync::Arc, time::Duration};
 
-use tower_http::trace::TraceLayer;
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -34,13 +34,51 @@ async fn main() -> anyhow::Result<()> {
     let service = StreamableHttpService::new(
         move || Ok(tools::RegistryMcp::new(Arc::clone(&cfg_factory), Arc::clone(&registry_factory))),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default().with_cancellation_token(ct.child_token()),
+        {
+            let base = StreamableHttpServerConfig::default()
+                .with_cancellation_token(ct.child_token());
+            if cfg.server.allowed_hosts.is_empty() {
+                base.disable_allowed_hosts()
+            } else {
+                base.with_allowed_hosts(cfg.server.allowed_hosts.iter().cloned())
+            }
+        },
     );
+
+    let cors = if cfg.server.allowed_origins.is_empty() {
+        None
+    } else {
+        use http::header::{AUTHORIZATION, CONTENT_TYPE};
+        use tower_http::cors::AllowOrigin;
+
+        let origins = cfg.server.allowed_origins.iter()
+            .filter_map(|o| o.parse().ok())
+            .collect::<Vec<http::HeaderValue>>();
+
+        Some(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods([
+                    http::Method::GET,
+                    http::Method::POST,
+                    http::Method::OPTIONS,
+                    http::Method::DELETE,
+                ])
+                .allow_headers([CONTENT_TYPE, AUTHORIZATION, "mcp-session-id".parse().unwrap()])
+                .expose_headers(["mcp-session-id".parse().unwrap()])
+                .allow_credentials(true),
+        )
+    };
 
     let addr = format!("{}:{}", cfg.server.host, cfg.server.port);
     let router = axum::Router::new()
         .nest_service("/mcp", service)
         .layer(TraceLayer::new_for_http());
+    let router = if let Some(cors) = cors {
+        router.layer(cors)
+    } else {
+        router
+    };
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("registry-mcp listening on http://{addr}/mcp");
