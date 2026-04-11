@@ -16,7 +16,21 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 
-use crate::{config::Config, registry::client::RegistryClient};
+use crate::{auth::UserIdentity, config::Config, registry::client::RegistryClient};
+
+/// Emit a structured audit log entry at INFO level.
+/// Extra key=value pairs are formatted with Debug (`?`).
+macro_rules! audit {
+    ($self:expr, $op:expr $(, $key:ident = $val:expr)*) => {
+        tracing::info!(
+            target: "audit",
+            user_sub = %$self.identity.sub,
+            user_email = ?$self.identity.email,
+            op = $op,
+            $($key = ?$val,)*
+        );
+    };
+}
 
 /// The MCP server handler.  All tool methods delegate to free functions in the
 /// sub-modules; this struct is a thin dispatch layer required by `rmcp`.
@@ -24,15 +38,18 @@ use crate::{config::Config, registry::client::RegistryClient};
 pub struct RegistryMcp {
     pub config: Arc<Config>,
     pub registry: Arc<RegistryClient>,
+    /// Identity of the authenticated caller for this MCP session.
+    pub identity: UserIdentity,
     #[allow(dead_code)]
     tool_router: ToolRouter<RegistryMcp>,
 }
 
 impl RegistryMcp {
-    pub fn new(config: Arc<Config>, registry: Arc<RegistryClient>) -> Self {
+    pub fn new(config: Arc<Config>, registry: Arc<RegistryClient>, identity: UserIdentity) -> Self {
         Self {
             config,
             registry,
+            identity,
             tool_router: Self::tool_router(),
         }
     }
@@ -46,6 +63,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<catalog::ListRepositoriesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "list_repositories");
         catalog::list_repositories(&self.registry, params).await
     }
 
@@ -55,6 +73,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<catalog::ListTagsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "list_tags", repository = params.repository);
         catalog::list_tags(&self.registry, params).await
     }
 
@@ -66,6 +85,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<manifest::GetManifestParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "get_manifest", repository = params.repository, reference = params.reference);
         manifest::get_manifest(&self.registry, params).await
     }
 
@@ -78,6 +98,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<manifest::DiskUsageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "get_repository_disk_usage", repository = params.repository);
         manifest::get_repository_disk_usage(&self.registry, params).await
     }
 
@@ -89,6 +110,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<delete::DeleteTagParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "delete_tag", repository = params.repository, tag = params.tag, confirm = params.confirm);
         delete::delete_tag(&self.registry, params).await
     }
 
@@ -99,6 +121,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<tag::UntagParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "untag", repository = params.repository, tag = params.tag);
         tag::untag(&self.registry, params).await
     }
 
@@ -109,6 +132,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<tag::TagManifestParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "tag_manifest", repository = params.repository, source = params.source, new_tag = params.new_tag);
         tag::tag_manifest(&self.registry, params).await
     }
 
@@ -121,6 +145,7 @@ impl RegistryMcp {
         Parameters(params): Parameters<gc::RunGcParams>,
         ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "run_gc", dry_run = params.dry_run, delete_untagged = params.delete_untagged);
         gc::run_gc(Arc::clone(&self.config), params, ctx).await
     }
 
@@ -136,6 +161,7 @@ impl RegistryMcp {
         &self,
         Parameters(params): Parameters<migrate::MigrateParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        audit!(self, "migrate", source = params.source);
         migrate::migrate(&self.registry, params).await
     }
 }

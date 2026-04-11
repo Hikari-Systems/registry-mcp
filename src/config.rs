@@ -9,6 +9,41 @@ pub struct Config {
     pub registry: RegistryConfig,
     pub gc: GcConfig,
     pub log: LogConfig,
+    pub auth: AuthConfig,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct AuthConfig {
+    /// When false the /mcp endpoint accepts all requests with an anonymous identity.
+    #[serde(deserialize_with = "deser_bool_or_str")]
+    pub enabled: bool,
+
+    /// OAuth 2.0 issuer URL — must match the `iss` claim in incoming JWTs.
+    /// E.g. `https://accounts.google.com` or `https://auth.example.com/realms/myrealm`.
+    pub issuer: String,
+
+    /// JWKS URI used to fetch the public keys for JWT signature verification.
+    /// E.g. `https://accounts.google.com/.well-known/jwks.json`
+    #[serde(rename = "jwksUri")]
+    pub jwks_uri: String,
+
+    /// Expected `aud` claim value.  Leave empty to skip audience validation.
+    pub audience: String,
+
+    /// Advertised in `/.well-known/oauth-authorization-server`.
+    /// Full URL of the `/authorize` endpoint on the upstream AS.
+    #[serde(rename = "authorizationEndpoint")]
+    pub authorization_endpoint: String,
+
+    /// Advertised in `/.well-known/oauth-authorization-server`.
+    /// Full URL of the `/token` endpoint on the upstream AS.
+    #[serde(rename = "tokenEndpoint")]
+    pub token_endpoint: String,
+
+    /// Advertised in `/.well-known/oauth-authorization-server`.
+    /// Full URL of the dynamic client registration endpoint (RFC 7591), if supported.
+    #[serde(rename = "registrationEndpoint")]
+    pub registration_endpoint: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]

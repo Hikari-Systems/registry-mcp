@@ -28,6 +28,10 @@ hs-utils           = { git = "https://github.com/Hikari-Systems/hs-utils-rs", ta
 tracing            = "0.1"
 futures-util       = "0.3"
 url                = "2"
+jsonwebtoken       = "9"
+tower              = { version = "0.5", features = ["util"] }
+axum-extra         = { version = "0.10", features = ["typed-header"] }
+headers            = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

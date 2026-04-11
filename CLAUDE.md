@@ -6,7 +6,7 @@ Guidance for AI assistants working on this codebase.
 
 ## What this service does
 
-An MCP (Model Context Protocol) server that wraps a Docker Distribution / OCI registry. Exposes six tools: `list_repositories`, `list_tags`, `get_manifest`, `get_repository_disk_usage`, `delete_tag`, and `run_gc`. Uses the Streamable HTTP MCP transport (rmcp 1.4.0). Garbage collection is handled either by shelling out to a script or by managing a `registry:3` Docker container lifecycle via bollard.
+An MCP (Model Context Protocol) server that wraps a Docker Distribution / OCI registry. Exposes nine tools: `list_repositories`, `list_tags`, `get_manifest`, `get_repository_disk_usage`, `tag_manifest`, `untag`, `delete_tag`, `migrate`, and `run_gc`. Uses the Streamable HTTP MCP transport (rmcp 1.4.0). Garbage collection is handled either by shelling out to a script or by managing a `registry:3` Docker container lifecycle via bollard. OAuth 2.0 Bearer JWT authentication is optional; when enabled, the server validates tokens against a JWKS endpoint and stamps every tool call with the caller's identity for audit logging.
 
 ---
 
@@ -14,18 +14,23 @@ An MCP (Model Context Protocol) server that wraps a Docker Distribution / OCI re
 
 ```
 src/
-  main.rs                   — startup: config load, registry client, MCP server bind, healthcheck subcommand
+  main.rs                   — startup: config load, registry client, auth state, MCP server bind, healthcheck subcommand
   lib.rs                    — re-exports all modules for integration test access
-  config.rs                 — Config struct, load() (3-layer JSON merge + env overrides), validate()
+  config.rs                 — Config struct (incl. AuthConfig), load() (3-layer JSON merge + env overrides), validate()
   error.rs                  — RegistryError and GcError enums (thiserror)
   types.rs                  — shared data types: raw API shapes, all tool output structs, GcStrategy enum
   migrate.rs                — parse_source(), copy_image(), blob copy helpers (used by tools/migrate.rs)
+  auth/
+    mod.rs                  — UserIdentity struct, CURRENT_USER task-local, current_user() helper
+    jwt.rs                  — JwtValidator: JWKS fetch + 1-hour cache, JWT decode/verify (jsonwebtoken v9)
+    middleware.rs           — axum auth_middleware: extracts Bearer token, validates, scopes task-local
+    well_known.rs           — GET /.well-known/oauth-authorization-server and /.well-known/oauth-protected-resource
   registry/
     mod.rs                  — module re-exports
     auth.rs                 — basic auth header builder, bearer token fetch + in-memory cache
     client.rs               — RegistryClient: all OCI Distribution HTTP calls, 401 token retry
   tools/
-    mod.rs                  — RegistryMcp struct, #[tool_router], #[tool_handler], ServerHandler impl
+    mod.rs                  — RegistryMcp struct (incl. identity field), audit! macro, #[tool_router], ServerHandler impl
     catalog.rs              — list_repositories, list_tags
     manifest.rs             — get_manifest, get_repository_disk_usage
     delete.rs               — delete_tag
@@ -134,6 +139,50 @@ Copies an image from an external registry into the managed registry using the OC
 
 Registry must have `storage.delete.enabled: true` in its config. A `405` response is surfaced as `DeleteNotEnabled`.
 
+### OAuth authentication (`auth/`)
+
+The `auth` module implements the [MCP OAuth 2.0](https://spec.modelcontextprotocol.io/specification/basic/authentication/) pattern where registry-mcp is an OAuth **Protected Resource** and all token issuance is delegated to an external Authorization Server configured in `auth.*`.
+
+**Discovery endpoints** (`auth/well_known.rs`):
+- `GET /.well-known/oauth-authorization-server` — RFC 8414 metadata: advertises the upstream AS's `authorization_endpoint`, `token_endpoint`, `registration_endpoint`, PKCE methods. Returns 404 when `auth.enabled = false`.
+- `GET /.well-known/oauth-protected-resource` — RFC 9396 metadata: names this server as the resource and lists the issuer. Always served.
+
+Both are registered at the root axum router (not under `/mcp`) so they are reachable at the server origin without authentication.
+
+**Middleware** (`auth/middleware.rs`):
+`auth_middleware` is an axum `from_fn_with_state` middleware applied to the `/mcp` route. It:
+1. Extracts `Authorization: Bearer <token>` from the request header.
+2. When `auth.enabled = false`, calls `CURRENT_USER.scope(UserIdentity::anonymous(), next.run(req))` and passes through.
+3. When `auth.enabled = true`, calls `JwtValidator::validate()`. On success, scopes the task-local with the identity. On failure, returns `401` with `WWW-Authenticate: Bearer error="invalid_token"`.
+
+**JWT validation** (`auth/jwt.rs`):
+`JwtValidator` holds an `AuthConfig`, a `reqwest::Client`, and an `RwLock<Option<JwksCache>>`. `validate(token)` flow:
+1. `decode_header(token)` → extract `kid` and `alg`.
+2. `find_key(kid, alg)` → check cache (TTL 1 hour) → if miss/stale, `fetch_jwks()` → refresh cache → return key.
+3. `DecodingKey::from_jwk(jwk)` + `Validation` with `iss` and optionally `aud`.
+4. `decode::<Claims>(token, &key, &validation)` → build `UserIdentity { sub, email, display_name }`.
+5. Key selection: prefer exact `kid` match in the JWKS; fall back to first key with a matching algorithm.
+
+**Identity threading — task-local pattern** (`auth/mod.rs`):
+The rmcp `StreamableHttpService` factory (`FnMut() -> Result<Handler>`) creates a new `RegistryMcp` per session but does not receive request data. To thread the per-request identity from the axum middleware into the factory:
+
+```rust
+tokio::task_local! {
+    pub static CURRENT_USER: UserIdentity;
+}
+```
+
+The middleware calls `CURRENT_USER.scope(identity, next.run(req)).await` — this sets the task-local for the duration of the entire request in the current Tokio task. The factory, which runs synchronously within that same task, reads it with `CURRENT_USER.try_with(|u| u.clone()).unwrap_or_default()`. This is safe because Tokio task-locals are scoped per-task with no sharing across concurrent sessions.
+
+`current_user()` is a convenience wrapper around `try_with` that falls back to `UserIdentity::anonymous()` when called outside a scoped task (e.g. in tests).
+
+**Audit logging** (`tools/mod.rs`):
+The `audit!` macro emits a `tracing::info!` to the `audit` target with `user_sub`, `user_email`, `op`, and operation-specific fields (repository, tag, confirm, etc.). It uses Debug (`?`) format for all caller-provided values so it works uniformly across `String`, `Option<bool>`, and other types. Called at the top of every `RegistryMcp` tool method before delegating to the free function.
+
+**`AuthConfig`** (`config.rs`): new top-level config section with fields `enabled`, `issuer`, `jwks_uri`, `audience`, `authorization_endpoint`, `token_endpoint`, `registration_endpoint`. All override via env vars using the standard `auth__fieldName` pattern.
+
+**`server__publicUrl` env var** (`main.rs`): overrides the `resource` field in `/.well-known/oauth-protected-resource`. Required when the server is behind a reverse proxy. Defaults to `http://<server.host>:<server.port>`.
+
 ### Healthcheck subcommand (`main.rs`)
 
 `./registry-mcp healthcheck` opens a stdlib TCP connection to `127.0.0.1:<server.port>` and exits 0 on success. No async runtime, no external deps. Used in `HEALTHCHECK` Dockerfile directive. Port is read from the `server__port` env var (default 3000) — not from `config.json` — to avoid a full config parse.
@@ -204,3 +253,9 @@ docker compose -f tests/docker-compose.test.yml down -v
 - Blob storage is not reclaimed by `delete_tag` alone — GC must be run afterward to free disk space.
 - The GC container is created with no restart policy. If it exits non-zero the result is surfaced in the tool response (`exit_code`, `stderr`), not as a Rust error.
 - `gc.dockerNetwork: "host"` is required when the GC container needs to reach a storage backend (e.g. MinIO) that is only exposed on the host network.
+- `auth.enabled: false` (the default) disables token validation entirely — every request runs as `anonymous`. This is intentional for local/trusted deployments.
+- The `/.well-known/oauth-authorization-server` endpoint returns **404** when `auth.enabled = false`. This is correct — it signals to clients that OAuth is not configured, rather than advertising non-functional endpoints.
+- `auth__jwksUri` and `auth__issuer` must both be set when `auth.enabled = true`. The server will start without them but every request will fail validation.
+- JWKS keys are cached for one hour. If your AS rotates keys more frequently, a validation failure will trigger an immediate cache refresh and retry.
+- The `CURRENT_USER` task-local is scoped per Tokio task — do not try to read it from a spawned `tokio::task::spawn` inside a tool, as the task-local will not propagate across `spawn` boundaries. Use `current_user()` before spawning and capture the result.
+- `server__publicUrl` must be set to the public HTTPS URL when running behind a reverse proxy; otherwise `/.well-known/oauth-protected-resource` returns the internal bind address in the `resource` field, which OAuth clients may reject.

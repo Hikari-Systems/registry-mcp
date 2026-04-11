@@ -547,6 +547,15 @@ Configuration is loaded in priority order (lowest → highest):
   },
   "log": {
     "level": "info"
+  },
+  "auth": {
+    "enabled": false,
+    "issuer": "",
+    "jwksUri": "",
+    "audience": "",
+    "authorizationEndpoint": "",
+    "tokenEndpoint": "",
+    "registrationEndpoint": ""
   }
 }
 ```
@@ -571,6 +580,166 @@ Keys use `:` as a depth separator, reflecting the JSON structure. When setting a
 | `gc:registryImage` | `registry:3` | Registry image used for Docker-based GC. |
 | `gc:dockerNetwork` | `""` | Docker network for the GC container. Empty uses Docker's default bridge. Set to `host` if the GC container needs to reach a storage backend (e.g. MinIO) on the host. |
 | `log:level` | `info` | Tracing filter: `error`, `warn`, `info`, `debug`, `trace`. |
+| `auth:enabled` | `false` | When `false`, all MCP requests are accepted and attributed to `anonymous`. Set to `true` to require a valid Bearer JWT on every request. |
+| `auth:issuer` | `""` | OAuth 2.0 issuer URL. Must match the `iss` claim in incoming JWTs and is advertised in `/.well-known/oauth-authorization-server`. |
+| `auth:jwksUri` | `""` | URL of the JWKS endpoint used to fetch the public keys for JWT signature verification, e.g. `https://accounts.google.com/.well-known/jwks.json`. Keys are cached for one hour. |
+| `auth:audience` | `""` | Expected `aud` claim value. Leave empty to skip audience validation. |
+| `auth:authorizationEndpoint` | `""` | Advertised in `/.well-known/oauth-authorization-server`. The `/authorize` URL on the upstream AS. |
+| `auth:tokenEndpoint` | `""` | Advertised in `/.well-known/oauth-authorization-server`. The `/token` URL on the upstream AS. |
+| `auth:registrationEndpoint` | `""` | Advertised in `/.well-known/oauth-authorization-server`. The dynamic client registration URL (RFC 7591), if your AS supports it. Required for Claude to register automatically. |
+
+---
+
+## Authentication
+
+registry-mcp implements the OAuth 2.0 Protected Resource pattern described in the MCP specification. When enabled, it validates a Bearer JWT on every request to `/mcp` and records the caller's identity in the audit log. The actual OAuth flow — user login, token issuance — is handled by an external Authorization Server (your own OAuth provider or any OIDC-compatible service).
+
+### How it works
+
+```
+Claude / ChatGPT
+  │
+  ├─ GET /.well-known/oauth-authorization-server   ← discover AS endpoints
+  ├─ redirect user → upstream AS for login
+  ├─ receive authorization code → exchange for access token
+  │
+  └─ POST /mcp  Authorization: Bearer <access_token>
+                     │
+                     ├─ auth middleware validates JWT (JWKS, iss, aud, exp)
+                     ├─ user identity stamped into session (sub, email, display_name)
+                     └─ tool call proceeds; identity logged in audit output
+```
+
+Two discovery endpoints are always served at the server root:
+
+| Endpoint | Standard | Notes |
+|---|---|---|
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 | Advertises `authorization_endpoint`, `token_endpoint`, `registration_endpoint`. Returns 404 when `auth:enabled` is false. |
+| `GET /.well-known/oauth-protected-resource` | RFC 9396 | Declares this server as a protected resource. Always served, even when auth is disabled. |
+
+### Setting up with an OIDC provider
+
+Any provider that issues RS256 JWTs and exposes a JWKS endpoint works. The configuration below uses generic field names — substitute the actual URLs from your provider's discovery document (`/.well-known/openid-configuration`).
+
+```json
+{
+  "auth": {
+    "enabled": true,
+    "issuer": "https://auth.example.com",
+    "jwksUri": "https://auth.example.com/.well-known/jwks.json",
+    "audience": "registry-mcp",
+    "authorizationEndpoint": "https://auth.example.com/oauth/authorize",
+    "tokenEndpoint": "https://auth.example.com/oauth/token",
+    "registrationEndpoint": "https://auth.example.com/oauth/register"
+  }
+}
+```
+
+Or via environment variables:
+
+```bash
+auth__enabled=true
+auth__issuer=https://auth.example.com
+auth__jwksUri=https://auth.example.com/.well-known/jwks.json
+auth__audience=registry-mcp
+auth__authorizationEndpoint=https://auth.example.com/oauth/authorize
+auth__tokenEndpoint=https://auth.example.com/oauth/token
+auth__registrationEndpoint=https://auth.example.com/oauth/register
+```
+
+### Common provider examples
+
+**Google OAuth 2.0**
+
+```json
+{
+  "auth": {
+    "enabled": true,
+    "issuer": "https://accounts.google.com",
+    "jwksUri": "https://www.googleapis.com/oauth2/v3/certs",
+    "audience": "<your-google-client-id>",
+    "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+    "tokenEndpoint": "https://oauth2.googleapis.com/token",
+    "registrationEndpoint": ""
+  }
+}
+```
+
+Google does not support dynamic client registration, so `registrationEndpoint` should be left empty. You will need to register the Claude or ChatGPT redirect URI in the Google Cloud Console manually.
+
+**Keycloak**
+
+```json
+{
+  "auth": {
+    "enabled": true,
+    "issuer": "https://keycloak.example.com/realms/myrealm",
+    "jwksUri": "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/certs",
+    "audience": "registry-mcp",
+    "authorizationEndpoint": "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/auth",
+    "tokenEndpoint": "https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token",
+    "registrationEndpoint": "https://keycloak.example.com/realms/myrealm/clients-registrations/openid-connect"
+  }
+}
+```
+
+Enable "Client Registration" under Realm Settings in the Keycloak admin UI.
+
+### Dynamic client registration (Claude)
+
+Claude requires an OAuth client to be registered before it can complete the authorization flow. If your AS exposes a `registrationEndpoint` (RFC 7591), Claude registers itself automatically when you add the integration — no manual step required.
+
+If your AS does not support dynamic registration (e.g. Google), you must register a client manually and configure the provider with Claude's redirect URI before adding the integration:
+
+1. Create an OAuth client in your provider's console
+2. Add Claude's redirect URI (displayed during integration setup)
+3. Leave `registrationEndpoint` empty in the config
+
+### PKCE
+
+Claude and ChatGPT both use the Authorization Code flow with PKCE (RFC 7636, `S256`). The `/.well-known/oauth-authorization-server` response advertises `"code_challenge_methods_supported": ["S256"]`. Your AS must support PKCE — all modern providers do.
+
+### Public URL
+
+The `/.well-known` endpoints and the auth redirect flow require that registry-mcp be reachable at a stable public HTTPS URL. Set the `server__publicUrl` environment variable if the server is running behind a reverse proxy:
+
+```bash
+server__publicUrl=https://registry-mcp.example.com
+```
+
+This value is returned in the `resource` field of `/.well-known/oauth-protected-resource`. If not set it defaults to `http://<server.host>:<server.port>`, which is only suitable for local development.
+
+### Audit logging
+
+Every tool call emits a structured log line at `INFO` level to the `audit` target regardless of whether authentication is enabled:
+
+```
+INFO audit: user_sub="alice@example.com" user_email=Some("alice@example.com") op="delete_tag" repository="myapp/api" tag="v1.0" confirm=Some(true)
+```
+
+When auth is disabled, `user_sub` is `"anonymous"`. The fields logged per operation are:
+
+| Tool | Extra fields |
+|---|---|
+| `list_repositories` | — |
+| `list_tags` | `repository` |
+| `get_manifest` | `repository`, `reference` |
+| `get_repository_disk_usage` | `repository` |
+| `delete_tag` | `repository`, `tag`, `confirm` |
+| `untag` | `repository`, `tag` |
+| `tag_manifest` | `repository`, `source`, `new_tag` |
+| `run_gc` | `dry_run`, `delete_untagged` |
+| `migrate` | `source` |
+
+To capture audit logs separately from application logs, filter on the `audit` target in your log aggregation stack (e.g. with a `tracing_subscriber` env filter of `audit=info`).
+
+### Token validation details
+
+- **Algorithm:** any algorithm supported by your AS; the key is selected by `kid` from the JWKS. Falls back to the first key with a matching algorithm if `kid` is absent.
+- **Claims verified:** `iss` (must match `auth:issuer`), `aud` (must match `auth:audience` if set), `exp` (expiry enforced).
+- **Identity claims read:** `sub` (always), `email`, `preferred_username`, `name`.
+- **JWKS caching:** keys are fetched once and cached for one hour. A JWKS refresh is triggered automatically if no matching key is found for a new `kid`.
+- **On validation failure:** the server returns `401 Unauthorized` with `WWW-Authenticate: Bearer error="invalid_token"`. The MCP session is not established.
 
 ---
 
