@@ -2,6 +2,7 @@ pub mod catalog;
 pub mod delete;
 pub mod gc;
 pub mod manifest;
+pub mod tag;
 
 use std::sync::Arc;
 
@@ -88,6 +89,16 @@ impl RegistryMcp {
         Parameters(params): Parameters<delete::DeleteTagParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         delete::delete_tag(&self.registry, params).await
+    }
+
+    #[tool(description = "Create a new tag pointing at the same manifest as an existing \
+        tag or digest. Equivalent to `docker tag` — no data is copied, only the manifest \
+        reference is updated. `source` may be a tag name or a `sha256:…` digest.")]
+    async fn tag_manifest(
+        &self,
+        Parameters(params): Parameters<tag::TagManifestParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        tag::tag_manifest(&self.registry, params).await
     }
 
     #[tool(description = "Run garbage collection on the registry. Selects strategy \

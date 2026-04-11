@@ -245,6 +245,86 @@ impl RegistryClient {
     ) -> Result<String, RegistryError> {
         self.head_manifest(repository, tag).await
     }
+
+    /// Fetch the raw manifest bytes, content-type, and digest for a tag or digest.
+    /// Used by `tag_manifest` to copy a manifest under a new tag name.
+    pub async fn get_manifest_raw(
+        &self,
+        repository: &str,
+        reference: &str,
+    ) -> Result<RawManifestBytes, RegistryError> {
+        let url = format!("{}/v2/{}/manifests/{}", self.base_url, repository, reference);
+        let resp = self.get(&url, MANIFEST_ACCEPT).await?;
+
+        let digest = resp
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or(reference)
+            .to_string();
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(RegistryError::Transport)?
+            .to_vec();
+
+        Ok(RawManifestBytes { digest, content_type, bytes })
+    }
+
+    /// PUT a manifest under a new tag name. Returns the canonical digest from
+    /// the `Docker-Content-Digest` response header.
+    pub async fn put_manifest(
+        &self,
+        repository: &str,
+        tag: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<String, RegistryError> {
+        let url = format!("{}/v2/{}/manifests/{}", self.base_url, repository, tag);
+
+        let mut req = self
+            .client
+            .put(&url)
+            .header(reqwest::header::CONTENT_TYPE, content_type)
+            .body(body);
+
+        if let Some(auth) = resolve_auth_header(&self.cfg, &self.token_cache).await {
+            req = req.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&auth)
+                    .map_err(|e| RegistryError::InvalidResponse(e.to_string()))?,
+            );
+        }
+
+        let resp = req.send().await.map_err(RegistryError::Transport)?;
+        let resp = check_status(resp)?;
+
+        Ok(resp
+            .headers()
+            .get("docker-content-digest")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string())
+    }
+}
+
+/// Raw manifest bytes returned by `get_manifest_raw`, used for re-tagging.
+pub struct RawManifestBytes {
+    pub digest: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
 }
 
 /// The parsed result of a manifest fetch — either a single-platform image or
