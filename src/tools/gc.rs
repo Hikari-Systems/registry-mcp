@@ -49,8 +49,8 @@ pub async fn run_gc(
             stderr: String::new(),
             message: "No GC strategy is configured. \
                 To enable GC, set one of: \
-                gc.scriptPath (path to a shell script) or \
-                gc.registryConfigPath (path to a registry config.yml for Docker-based GC)."
+                gc:scriptPath (path to a shell script) or \
+                gc:registryConfigPath (path to a registry config.yml for Docker-based GC)."
                 .to_string(),
         },
     };

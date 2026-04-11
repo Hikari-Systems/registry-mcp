@@ -16,6 +16,7 @@ rmcp               = { version = "1.4.0", features = ["server", "transport-strea
 axum               = { version = "0.8", features = ["http1", "tokio"] }
 tokio              = { version = "1", features = ["full"] }
 tokio-util         = "0.7"
+tower-http         = { version = "0.6", features = ["trace"] }
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
 schemars           = "1"
@@ -24,7 +25,7 @@ bollard            = "0.17"
 anyhow             = "1"
 base64             = "0.22"
 thiserror          = "2"
-hs-utils           = { git = "https://github.com/Hikari-Systems/hs-utils-rs", tag = "v0.2.5" }
+hs-utils           = { git = "https://github.com/Hikari-Systems/hs-utils-rs", tag = "v0.2.6", default-features = false }
 tracing            = "0.1"
 futures-util       = "0.3"
 url                = "2"

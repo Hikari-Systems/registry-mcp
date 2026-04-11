@@ -76,14 +76,14 @@ pub fn load() -> Result<Config> {
 /// Validate config at startup before binding the server.
 pub fn validate(cfg: &Config) -> Result<()> {
     if cfg.registry.base_url.is_empty() {
-        bail!("registry.baseUrl must not be empty");
+        bail!("registry:baseUrl must not be empty");
     }
     url::Url::parse(&cfg.registry.base_url)
-        .with_context(|| format!("registry.baseUrl is not a valid URL: {}", cfg.registry.base_url))?;
+        .with_context(|| format!("registry:baseUrl is not a valid URL: {}", cfg.registry.base_url))?;
 
     if !cfg.registry.bearer_token.is_empty() && !cfg.registry.username.is_empty() {
         tracing::warn!(
-            "Both registry.bearerToken and registry.username are set — bearerToken takes precedence"
+            "Both registry:bearerToken and registry:username are set — bearerToken takes precedence"
         );
     }
 
@@ -91,24 +91,15 @@ pub fn validate(cfg: &Config) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let p = std::path::Path::new(&cfg.gc.script_path);
         if !p.exists() {
-            bail!("gc.scriptPath '{}' does not exist", cfg.gc.script_path);
+            bail!("gc:scriptPath '{}' does not exist", cfg.gc.script_path);
         }
         let mode = std::fs::metadata(p)
-            .with_context(|| format!("Cannot read gc.scriptPath '{}'", cfg.gc.script_path))?
+            .with_context(|| format!("Cannot read gc:scriptPath '{}'", cfg.gc.script_path))?
             .permissions()
             .mode();
         if mode & 0o111 == 0 {
-            bail!("gc.scriptPath '{}' is not executable", cfg.gc.script_path);
+            bail!("gc:scriptPath '{}' is not executable", cfg.gc.script_path);
         }
-    }
-
-    if !cfg.gc.registry_config_path.is_empty()
-        && !std::path::Path::new(&cfg.gc.registry_config_path).exists()
-    {
-        bail!(
-            "gc.registryConfigPath '{}' does not exist",
-            cfg.gc.registry_config_path
-        );
     }
 
     Ok(())

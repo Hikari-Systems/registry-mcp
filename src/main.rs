@@ -2,6 +2,8 @@ use registry_mcp::{config, registry, tools};
 
 use std::{net::TcpStream, sync::Arc, time::Duration};
 
+use tower_http::trace::TraceLayer;
+
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -36,7 +38,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let addr = format!("{}:{}", cfg.server.host, cfg.server.port);
-    let router = axum::Router::new().nest_service("/mcp", service);
+    let router = axum::Router::new()
+        .nest_service("/mcp", service)
+        .layer(TraceLayer::new_for_http());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     tracing::info!("registry-mcp listening on http://{addr}/mcp");
