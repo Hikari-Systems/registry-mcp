@@ -28,6 +28,7 @@ src/
     catalog.rs              — list_repositories, list_tags
     manifest.rs             — get_manifest, get_repository_disk_usage
     delete.rs               — delete_tag
+    tag.rs                  — tag_manifest
     gc.rs                   — run_gc (strategy dispatch)
   gc/
     mod.rs                  — resolve_strategy() — script → docker → unavailable
@@ -88,6 +89,14 @@ Every GC container is created with label `registry-mcp.gc=true`. This lets integ
 ### `get_repository_disk_usage` (`tools/manifest.rs`)
 
 Fetches all tags, then all manifests. For OCI image indexes, recursively fetches child manifests via `future::join_all` (parallelised per index). Blob digests are deduplicated across tags. Tags that 404 mid-flight are added to `skipped_tags` rather than failing the whole call.
+
+### `tag_manifest` (`tools/tag.rs`)
+
+Fetches the raw manifest bytes and `Content-Type` from `source` (tag or digest) via `GET /v2/<name>/manifests/<source>`, then PUTs the identical bytes to `PUT /v2/<name>/manifests/<new_tag>`. No layer data is copied — only the manifest reference is written.
+
+The digest in the response comes from the PUT's `Docker-Content-Digest` header. If the registry omits that header (non-standard behaviour), the digest from the preceding GET is used as a fallback.
+
+Auth: the bearer token fetched during the GET is cached and reused for the PUT. No separate auth round-trip is needed.
 
 ### `delete_tag` (`tools/delete.rs`)
 
