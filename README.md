@@ -107,22 +107,24 @@ Configuration is loaded in priority order (lowest → highest):
 
 ### Field reference
 
-| Env var | Default | Description |
+Keys use `:` as a depth separator, reflecting the JSON structure. When setting a key via an environment variable, replace `:` with `__` — e.g. `registry:baseUrl` becomes `registry__baseUrl=https://...`.
+
+| Key | Default | Description |
 |---|---|---|
-| `server__host` | `0.0.0.0` | Bind address |
-| `server__port` | `3000` | TCP port |
-| `registry__baseUrl` | *(required)* | Base URL of the registry, e.g. `https://registry.example.com`. No trailing slash. |
-| `registry__username` | `""` | HTTP Basic auth username. Used when `registry__bearerToken` is empty. |
-| `registry__password` | `""` | HTTP Basic auth password. |
-| `registry__bearerToken` | `""` | Static bearer token. Takes precedence over Basic auth when non-empty. |
-| `registry__insecureSkipVerify` | `false` | Skip TLS certificate verification. For self-signed registries only. |
-| `registry__caCertFile` | `""` | Path to a PEM CA certificate to add to the trust store. |
-| `gc__scriptPath` | `""` | Absolute path to a shell script for GC. Takes priority over Docker-based GC when set. See [Garbage Collection](#garbage-collection). |
-| `gc__registryConfigPath` | `""` | Path to a registry `config.yml` to mount into the GC container. Required for Docker-based GC. |
-| `gc__dockerSocket` | `/var/run/docker.sock` | Docker socket path. |
-| `gc__registryImage` | `registry:3` | Registry image used for Docker-based GC. |
-| `gc__dockerNetwork` | `""` | Docker network for the GC container. Empty uses Docker's default bridge. Set to `host` if the GC container needs to reach a storage backend (e.g. MinIO) on the host. |
-| `log__level` | `info` | Tracing filter: `error`, `warn`, `info`, `debug`, `trace`. |
+| `server:host` | `0.0.0.0` | Bind address |
+| `server:port` | `3000` | TCP port |
+| `registry:baseUrl` | *(required)* | Base URL of the registry, e.g. `https://registry.example.com`. No trailing slash. |
+| `registry:username` | `""` | HTTP Basic auth username. Used when `registry:bearerToken` is empty. |
+| `registry:password` | `""` | HTTP Basic auth password. |
+| `registry:bearerToken` | `""` | Static bearer token. Takes precedence over Basic auth when non-empty. |
+| `registry:insecureSkipVerify` | `false` | Skip TLS certificate verification. For self-signed registries only. |
+| `registry:caCertFile` | `""` | Path to a PEM CA certificate to add to the trust store. |
+| `gc:scriptPath` | `""` | Absolute path to a shell script for GC. Takes priority over Docker-based GC when set. See [Garbage Collection](#garbage-collection). |
+| `gc:registryConfigPath` | `""` | Path to a registry `config.yml` to mount into the GC container. Required for Docker-based GC. |
+| `gc:dockerSocket` | `/var/run/docker.sock` | Docker socket path. |
+| `gc:registryImage` | `registry:3` | Registry image used for Docker-based GC. |
+| `gc:dockerNetwork` | `""` | Docker network for the GC container. Empty uses Docker's default bridge. Set to `host` if the GC container needs to reach a storage backend (e.g. MinIO) on the host. |
+| `log:level` | `info` | Tracing filter: `error`, `warn`, `info`, `debug`, `trace`. |
 
 ---
 
@@ -144,9 +146,9 @@ registry-mcp handles this automatically via the Docker strategy described below.
 ### Strategy selection
 
 ```
-gc__scriptPath set and file exists        →  Shell script
-gc__registryConfigPath set and file exists  →  Docker container (bollard)
-neither                                   →  Unavailable (tool returns a message, not an error)
+gc:scriptPath set and file exists          →  Shell script
+gc:registryConfigPath set and file exists  →  Docker container (bollard)
+neither                                    →  Unavailable (tool returns a message, not an error)
 ```
 
 Strategy is resolved at call time, not startup — you can add or remove the script file without restarting the server.
@@ -159,11 +161,11 @@ Strategy is resolved at call time, not startup — you can add or remove the scr
 
 **Lifecycle:**
 
-1. Inspects the local Docker daemon for `gc__registryImage` (`registry:3` by default); pulls if not present
+1. Inspects the local Docker daemon for `gc:registryImage` (`registry:3` by default); pulls if not present
 2. Creates a short-lived container with:
-   - `gc__registryConfigPath` bind-mounted read-only at `/etc/docker/registry/config.yml`
+   - `gc:registryConfigPath` bind-mounted read-only at `/etc/docker/registry/config.yml`
    - `REGISTRY_HTTP_ADDR` cleared (the container runs GC only — no HTTP listener)
-   - `gc__dockerNetwork` applied if set
+   - `gc:dockerNetwork` applied if set
 3. Runs `/bin/registry garbage-collect /etc/docker/registry/config.yml [--dry-run] [--delete-untagged]`
 4. Streams log output line-by-line as MCP progress notifications in real time
 5. Waits for the process to exit and captures the exit code
@@ -173,7 +175,7 @@ The tool response includes `strategy`, `dry_run`, `exit_code`, `stdout`, and `st
 
 #### Giving registry-mcp access to the Docker daemon
 
-bollard connects to the socket at `gc__dockerSocket` (default `/var/run/docker.sock`). When running registry-mcp in a container, the socket must be bind-mounted:
+bollard connects to the socket at `gc:dockerSocket` (default `/var/run/docker.sock`). When running registry-mcp in a container, the socket must be bind-mounted:
 
 ```bash
 docker run -p 3000:3000 \
@@ -243,14 +245,14 @@ gc__registryConfigPath=/etc/registry-mcp/gc-config.yml
 The GC container is created on Docker's default bridge network. It needs to be able to reach the storage backend (S3, MinIO, etc.) over the network.
 
 - **AWS S3:** no special network config needed — outbound HTTPS to AWS works from the default bridge.
-- **Self-hosted MinIO on the same host:** the GC container cannot reach `localhost` on the host from inside the default bridge. Set `gc__dockerNetwork=host` to use host networking, then use `http://127.0.0.1:<minio-port>` as the endpoint in the GC config.
-- **MinIO in the same docker-compose stack:** set `gc__dockerNetwork` to the compose network name (typically `<project>_default`) so the GC container can resolve the MinIO service by hostname.
+- **Self-hosted MinIO on the same host:** the GC container cannot reach `localhost` on the host from inside the default bridge. Set `gc:dockerNetwork` to `host` to use host networking, then use `http://127.0.0.1:<minio-port>` as the endpoint in the GC config.
+- **MinIO in the same docker-compose stack:** set `gc:dockerNetwork` to the compose network name (typically `<project>_default`) so the GC container can resolve the MinIO service by hostname.
 
 ---
 
 ### Shell script strategy
 
-Set `gc__scriptPath` to the absolute path of an executable script. The server invokes it as:
+Set `gc:scriptPath` to the absolute path of an executable script. The server invokes it as:
 
 ```
 <scriptPath> [--dry-run] [--delete-untagged]
@@ -260,9 +262,9 @@ The following environment variables are forwarded to the script:
 
 | Variable | Value |
 |---|---|
-| `REGISTRY_URL` | `registry__baseUrl` |
-| `REGISTRY_USERNAME` | `registry__username` |
-| `REGISTRY_PASSWORD` | `registry__password` |
+| `REGISTRY_URL` | `registry:baseUrl` |
+| `REGISTRY_USERNAME` | `registry:username` |
+| `REGISTRY_PASSWORD` | `registry:password` |
 | `DRY_RUN` | `true` or `false` |
 | `DELETE_UNTAGGED` | `true` or `false` |
 
