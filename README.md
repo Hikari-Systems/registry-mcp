@@ -11,7 +11,8 @@ An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI 
 | `get_manifest` | Manifest details: media type, layers, total compressed size |
 | `get_repository_disk_usage` | Aggregate blob footprint for all tags, deduplicated |
 | `tag_manifest` | Create a new tag pointing at an existing tag or digest (equivalent to `docker tag`) |
-| `delete_tag` | Soft-delete a manifest by tag (dry-run by default, `confirm: true` to execute) |
+| `untag` | Remove a single tag reference without deleting the manifest or other tags pointing to the same digest |
+| `delete_tag` | Delete a manifest entirely by tag (dry-run by default, `confirm: true` to execute) |
 | `run_gc` | Run garbage collection (dry-run by default) |
 
 ## Running

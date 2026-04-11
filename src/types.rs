@@ -137,6 +137,14 @@ pub struct DiskUsageOutput {
     pub skipped_tags: Vec<String>,
 }
 
+/// Output of `untag`.
+#[derive(Debug, Serialize)]
+pub struct UntagOutput {
+    pub repository: String,
+    pub tag: String,
+    pub message: String,
+}
+
 /// Output of `tag_manifest`.
 #[derive(Debug, Serialize)]
 pub struct TagManifestOutput {

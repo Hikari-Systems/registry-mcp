@@ -91,6 +91,16 @@ impl RegistryMcp {
         delete::delete_tag(&self.registry, params).await
     }
 
+    #[tool(description = "Remove a single tag reference without deleting the underlying \
+        manifest. Other tags pointing at the same digest are unaffected. \
+        Use `delete_tag` (confirm: true) instead if you want to remove the manifest entirely.")]
+    async fn untag(
+        &self,
+        Parameters(params): Parameters<tag::UntagParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        tag::untag(&self.registry, params).await
+    }
+
     #[tool(description = "Create a new tag pointing at the same manifest as an existing \
         tag or digest. Equivalent to `docker tag` — no data is copied, only the manifest \
         reference is updated. `source` may be a tag name or a `sha256:…` digest.")]

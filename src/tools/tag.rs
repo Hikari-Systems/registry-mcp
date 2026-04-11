@@ -4,9 +4,40 @@ use rmcp::{ErrorData, model::CallToolResult};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::{registry::client::RegistryClient, types::TagManifestOutput};
+use crate::{registry::client::RegistryClient, types::{TagManifestOutput, UntagOutput}};
 
-use super::catalog::ok_json;
+use super::catalog::{ok_json, registry_err};
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UntagParams {
+    /// Repository name, e.g. `library/nginx`
+    pub repository: String,
+    /// Tag to remove. Only this tag reference is deleted — the manifest and
+    /// any other tags pointing to the same digest are unaffected.
+    pub tag: String,
+}
+
+/// Remove a single tag reference without deleting the underlying manifest.
+/// Uses DELETE by tag name rather than by digest, so other tags pointing at
+/// the same manifest remain intact.
+pub async fn untag(
+    registry: &Arc<RegistryClient>,
+    params: UntagParams,
+) -> Result<CallToolResult, ErrorData> {
+    registry
+        .delete_tag_reference(&params.repository, &params.tag)
+        .await
+        .map_err(registry_err)?;
+
+    ok_json(&UntagOutput {
+        message: format!(
+            "Tag '{}' removed from {}. The manifest is still present and reachable by digest or other tags.",
+            params.tag, params.repository
+        ),
+        repository: params.repository,
+        tag: params.tag,
+    })
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TagManifestParams {

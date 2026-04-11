@@ -28,7 +28,7 @@ src/
     catalog.rs              — list_repositories, list_tags
     manifest.rs             — get_manifest, get_repository_disk_usage
     delete.rs               — delete_tag
-    tag.rs                  — tag_manifest
+    tag.rs                  — tag_manifest, untag
     gc.rs                   — run_gc (strategy dispatch)
   gc/
     mod.rs                  — resolve_strategy() — script → docker → unavailable
@@ -97,6 +97,14 @@ Fetches the raw manifest bytes and `Content-Type` from `source` (tag or digest) 
 The digest in the response comes from the PUT's `Docker-Content-Digest` header. If the registry omits that header (non-standard behaviour), the digest from the preceding GET is used as a fallback.
 
 Auth: the bearer token fetched during the GET is cached and reused for the PUT. No separate auth round-trip is needed.
+
+### `untag` (`tools/tag.rs`)
+
+Issues `DELETE /v2/<name>/manifests/<tag>` using the tag name directly (not the digest). Registry:3 treats this as removing only that tag reference — the manifest blob and any other tags pointing to the same digest are unaffected.
+
+Contrast with `delete_tag`, which resolves the tag to a digest first and then issues `DELETE /v2/<name>/manifests/<digest>`, removing the manifest entirely regardless of how many tags reference it.
+
+`untag` has no dry-run guard — the operation is scoped to a single tag reference and the manifest is preserved.
 
 ### `delete_tag` (`tools/delete.rs`)
 

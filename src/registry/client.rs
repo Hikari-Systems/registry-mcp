@@ -246,6 +246,29 @@ impl RegistryClient {
         self.head_manifest(repository, tag).await
     }
 
+    /// Delete a tag reference by name without touching the underlying manifest.
+    /// Issues DELETE by tag name (not digest), so other tags pointing at the same
+    /// manifest are unaffected.  Contrast with `delete_manifest`, which deletes by
+    /// digest and removes the manifest entirely.
+    pub async fn delete_tag_reference(
+        &self,
+        repository: &str,
+        tag: &str,
+    ) -> Result<(), RegistryError> {
+        let url = format!("{}/v2/{}/manifests/{}", self.base_url, repository, tag);
+        let mut req = self.client.delete(&url);
+        if let Some(auth) = resolve_auth_header(&self.cfg, &self.token_cache).await {
+            req = req.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&auth)
+                    .map_err(|e| RegistryError::InvalidResponse(e.to_string()))?,
+            );
+        }
+        let resp = req.send().await.map_err(RegistryError::Transport)?;
+        check_status(resp)?;
+        Ok(())
+    }
+
     /// Fetch the raw manifest bytes, content-type, and digest for a tag or digest.
     /// Used by `tag_manifest` to copy a manifest under a new tag name.
     pub async fn get_manifest_raw(
