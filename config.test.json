@@ -1,0 +1,23 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3001
+  },
+  "registry": {
+    "baseUrl": "http://localhost:5000",
+    "username": "",
+    "password": "",
+    "bearerToken": "",
+    "insecureSkipVerify": false,
+    "caCertFile": ""
+  },
+  "gc": {
+    "scriptPath": "",
+    "registryConfigPath": "",
+    "dockerSocket": "/var/run/docker.sock",
+    "registryImage": "registry:3"
+  },
+  "log": {
+    "level": "debug"
+  }
+}

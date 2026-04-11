@@ -1,0 +1,24 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000
+  },
+  "registry": {
+    "baseUrl": "",
+    "username": "",
+    "password": "",
+    "bearerToken": "",
+    "insecureSkipVerify": false,
+    "caCertFile": ""
+  },
+  "gc": {
+    "scriptPath": "",
+    "registryConfigPath": "",
+    "dockerSocket": "/var/run/docker.sock",
+    "registryImage": "registry:3",
+    "dockerNetwork": ""
+  },
+  "log": {
+    "level": "info"
+  }
+}

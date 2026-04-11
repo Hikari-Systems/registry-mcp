@@ -1,0 +1,25 @@
+services:
+  registry-mcp:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      # Env vars use __ as path separator with exact camelCase key names
+      # matching the config.json structure, e.g. registry__baseUrl.
+      log__level: info
+      registry__baseUrl: ""
+      # registry__username: ""
+      # registry__password: ""
+      # registry__bearerToken: ""
+      # gc__scriptPath: ""
+      # gc__registryConfigPath: /registry/config.yml
+    volumes:
+      - ../../configs/registry-mcp:/sandbox
+      # Mount Docker socket only if using Docker GC strategy:
+      # - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["/app/registry-mcp", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

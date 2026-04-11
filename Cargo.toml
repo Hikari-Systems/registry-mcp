@@ -1,0 +1,40 @@
+[package]
+name = "registry-mcp"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "registry_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "registry-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp               = { version = "1.4.0", features = ["server", "transport-streamable-http-server"] }
+axum               = { version = "0.8", features = ["http1", "tokio"] }
+tokio              = { version = "1", features = ["full"] }
+tokio-util         = "0.7"
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+schemars           = "1"
+reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+bollard            = "0.17"
+anyhow             = "1"
+base64             = "0.22"
+thiserror          = "2"
+hs-utils           = { git = "https://github.com/Hikari-Systems/hs-utils-rs", tag = "v0.2.5" }
+tracing            = "0.1"
+futures-util       = "0.3"
+url                = "2"
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = "3"
+
+[profile.release]
+opt-level     = "s"
+strip         = true
+codegen-units = 1
+lto           = true
