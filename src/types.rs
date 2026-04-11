@@ -184,3 +184,20 @@ pub struct RunGcOutput {
     pub stderr: String,
     pub message: String,
 }
+
+/// Output of `migrate`.
+#[derive(Debug, Serialize)]
+pub struct MigrateOutput {
+    pub source: String,
+    pub target_repository: String,
+    pub target_tag: String,
+    pub digest: String,
+    pub is_multi_arch: bool,
+    pub manifests_copied: usize,
+    pub blobs_copied: usize,
+    pub blobs_skipped: usize,
+    /// True when the source registry returned 401 and no credentials were supplied.
+    /// Caller should retry with `source_username` and `source_password`.
+    pub requires_auth: bool,
+    pub message: String,
+}

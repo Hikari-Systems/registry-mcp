@@ -1,13 +1,18 @@
-# Test infrastructure for Docker GC integration tests.
+# Test infrastructure for integration tests.
 #
-# Brings up MinIO (S3-compatible storage) and a registry:3 instance backed by it,
-# with deletions enabled.  The GC integration tests connect to the registry on
-# localhost:5001 and spin up GC containers with host networking so they can reach
-# MinIO on localhost:9000.
+# Services:
+#   minio    — S3-compatible object store (port 9000)
+#   registry — registry:3 backed by MinIO (port 5001)
+#
+# REGISTRY_STORAGE_REDIRECT_DISABLE=true is set on the registry so that blob
+# HEAD/GET requests are served directly by the registry rather than being
+# redirected to http://minio:9000/...  Without this, tests running on the host
+# follow the redirect to a hostname that is only resolvable inside Docker.
 #
 # Usage:
 #   docker compose -f tests/docker-compose.test.yml up -d --wait
 #   REGISTRY_INTEGRATION_TEST=1 cargo test --test gc_integration -- --nocapture
+#   REGISTRY_INTEGRATION_TEST=1 cargo test --test migrate_integration -- --nocapture
 #   docker compose -f tests/docker-compose.test.yml down -v
 
 services:
@@ -55,6 +60,7 @@ services:
       REGISTRY_STORAGE_S3_REGION: us-east-1
       REGISTRY_STORAGE_S3_FORCEPATHSTYLE: "true"
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_STORAGE_REDIRECT_DISABLE: "true"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:5000/v2/ || exit 1"]
       interval: 5s

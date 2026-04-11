@@ -2,6 +2,7 @@ pub mod catalog;
 pub mod delete;
 pub mod gc;
 pub mod manifest;
+pub mod migrate;
 pub mod tag;
 
 use std::sync::Arc;
@@ -121,6 +122,21 @@ impl RegistryMcp {
         ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         gc::run_gc(Arc::clone(&self.config), params, ctx).await
+    }
+
+    #[tool(description = "Pull an image from an external registry and push it into \
+        this registry (equivalent to docker pull + docker tag + docker push, but using \
+        the OCI Distribution API directly — no Docker daemon required). \
+        Handles single-platform images and multi-arch image indexes. \
+        `source` accepts any standard image reference: `nginx:latest`, \
+        `docker.io/library/nginx:latest`, `registry.example.com/myorg/myimage:v1.0`, etc. \
+        For private source registries supply `source_username` and `source_password`; \
+        if the source returns 401 without credentials the tool will ask you to retry.")]
+    async fn migrate(
+        &self,
+        Parameters(params): Parameters<migrate::MigrateParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        migrate::migrate(&self.registry, params).await
     }
 }
 

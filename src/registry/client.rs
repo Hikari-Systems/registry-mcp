@@ -306,6 +306,138 @@ impl RegistryClient {
         Ok(RawManifestBytes { digest, content_type, bytes })
     }
 
+    /// Build a client pointed at an arbitrary registry with optional credentials.
+    /// Used to construct a temporary source client for `migrate`.
+    pub fn from_creds(
+        base_url: &str,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Result<Self> {
+        let cfg = RegistryConfig {
+            base_url: base_url.to_string(),
+            username: username.unwrap_or("").to_string(),
+            password: password.unwrap_or("").to_string(),
+            bearer_token: String::new(),
+            insecure_skip_verify: false,
+            ca_cert_file: String::new(),
+        };
+        Self::new(cfg)
+    }
+
+    /// HEAD a blob to determine whether it already exists in the repository.
+    pub async fn blob_exists(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<bool, RegistryError> {
+        let url = format!("{}/v2/{}/blobs/{}", self.base_url, repository, digest);
+        let mut req = self.client.head(&url);
+        if let Some(auth) = resolve_auth_header(&self.cfg, &self.token_cache).await {
+            req = req.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&auth)
+                    .map_err(|e| RegistryError::InvalidResponse(e.to_string()))?,
+            );
+        }
+        let resp = req.send().await.map_err(RegistryError::Transport)?;
+        match resp.status() {
+            StatusCode::OK => Ok(true),
+            StatusCode::NOT_FOUND => Ok(false),
+            StatusCode::UNAUTHORIZED => Err(RegistryError::Unauthorized),
+            s => Err(RegistryError::UnexpectedStatus {
+                status: s.as_u16(),
+                body: String::new(),
+            }),
+        }
+    }
+
+    /// Download a blob by digest.
+    pub async fn get_blob(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<Vec<u8>, RegistryError> {
+        let url = format!("{}/v2/{}/blobs/{}", self.base_url, repository, digest);
+        let resp = self.get(&url, "application/octet-stream").await?;
+        resp.bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(RegistryError::Transport)
+    }
+
+    /// Upload a blob using the OCI monolithic upload protocol:
+    /// POST (initiate) → PUT (commit with digest).
+    pub async fn push_blob(
+        &self,
+        repository: &str,
+        digest: &str,
+        data: Vec<u8>,
+    ) -> Result<(), RegistryError> {
+        // 1. Initiate upload.
+        let post_url = format!("{}/v2/{}/blobs/uploads/", self.base_url, repository);
+        let mut req = self
+            .client
+            .post(&post_url)
+            .header(reqwest::header::CONTENT_LENGTH, "0");
+        if let Some(auth) = resolve_auth_header(&self.cfg, &self.token_cache).await {
+            req = req.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&auth)
+                    .map_err(|e| RegistryError::InvalidResponse(e.to_string()))?,
+            );
+        }
+        let resp = req.send().await.map_err(RegistryError::Transport)?;
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            return Err(RegistryError::Unauthorized);
+        }
+        if resp.status() != StatusCode::ACCEPTED {
+            return Err(RegistryError::UnexpectedStatus {
+                status: resp.status().as_u16(),
+                body: "blob upload initiation failed".into(),
+            });
+        }
+
+        let location = resp
+            .headers()
+            .get("location")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                RegistryError::InvalidResponse(
+                    "blob upload POST response missing Location header".into(),
+                )
+            })?
+            .to_string();
+
+        // 2. Commit — PUT the full blob body with the digest query param.
+        let put_url = if location.starts_with("http://") || location.starts_with("https://") {
+            location
+        } else {
+            format!("{}{}", self.base_url, location)
+        };
+        let put_url = if put_url.contains('?') {
+            format!("{}&digest={}", put_url, digest)
+        } else {
+            format!("{}?digest={}", put_url, digest)
+        };
+        let content_len = data.len();
+        let mut req = self
+            .client
+            .put(&put_url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .header(reqwest::header::CONTENT_LENGTH, content_len)
+            .body(data);
+        if let Some(auth) = resolve_auth_header(&self.cfg, &self.token_cache).await {
+            req = req.header(
+                AUTHORIZATION,
+                HeaderValue::from_str(&auth)
+                    .map_err(|e| RegistryError::InvalidResponse(e.to_string()))?,
+            );
+        }
+        let resp = req.send().await.map_err(RegistryError::Transport)?;
+        check_status(resp)?;
+        Ok(())
+    }
+
     /// PUT a manifest under a new tag name. Returns the canonical digest from
     /// the `Docker-Content-Digest` response header.
     pub async fn put_manifest(

@@ -19,6 +19,7 @@ src/
   config.rs                 — Config struct, load() (3-layer JSON merge + env overrides), validate()
   error.rs                  — RegistryError and GcError enums (thiserror)
   types.rs                  — shared data types: raw API shapes, all tool output structs, GcStrategy enum
+  migrate.rs                — parse_source(), copy_image(), blob copy helpers (used by tools/migrate.rs)
   registry/
     mod.rs                  — module re-exports
     auth.rs                 — basic auth header builder, bearer token fetch + in-memory cache
@@ -29,6 +30,7 @@ src/
     manifest.rs             — get_manifest, get_repository_disk_usage
     delete.rs               — delete_tag
     tag.rs                  — tag_manifest, untag
+    migrate.rs              — migrate (MigrateParams, thin wrapper over migrate::copy_image)
     gc.rs                   — run_gc (strategy dispatch)
   gc/
     mod.rs                  — resolve_strategy() — script → docker → unavailable
@@ -105,6 +107,24 @@ Issues `DELETE /v2/<name>/manifests/<tag>` using the tag name directly (not the 
 Contrast with `delete_tag`, which resolves the tag to a digest first and then issues `DELETE /v2/<name>/manifests/<digest>`, removing the manifest entirely regardless of how many tags reference it.
 
 `untag` has no dry-run guard — the operation is scoped to a single tag reference and the manifest is preserved.
+
+### `migrate` (`migrate.rs`, `tools/migrate.rs`)
+
+Copies an image from an external registry into the managed registry using the OCI Distribution API only — no Docker daemon required.
+
+**Source parsing** (`migrate::parse_source`): handles `[registry/]repository[:tag][@digest]`. The first path component is identified as a registry if it contains `.` or `:` or equals `localhost`; otherwise Docker Hub is assumed. `docker.io` is translated to `registry-1.docker.io`. Bare names like `nginx` get the `library/` prefix.
+
+**Multi-arch flow** (`migrate::copy_image`):
+1. Fetch the top-level manifest raw bytes from source
+2. Check `Content-Type` to distinguish image index vs single-platform manifest
+3. For an index: parse as `RawIndex` → for each child digest, fetch child manifest + copy blobs → push child by digest → push index by target tag
+4. For single: copy blobs (config + layers) → push manifest by target tag
+
+**Blob copy** (`migrate::copy_blob`): `HEAD /v2/<repo>/blobs/<digest>` on destination first — skip if 200, otherwise `GET` from source and `POST /v2/<repo>/blobs/uploads/` + `PUT <location>?digest=<digest>` to destination.
+
+**Source auth**: `RegistryClient::from_creds(base_url, username, password)` builds a temporary client for the source registry with optional credentials. The existing 401-→-bearer-token retry logic in `RegistryClient::get` handles token challenges automatically.
+
+**Soft auth failure**: If `copy_image` returns `RegistryError::Unauthorized` and no credentials were provided, `tools/migrate.rs` returns `MigrateOutput { requires_auth: true }` (a tool success, not an error) with a message asking the caller to retry with credentials. If credentials were provided but still rejected, it surfaces as a tool error.
 
 ### `delete_tag` (`tools/delete.rs`)
 

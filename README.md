@@ -13,6 +13,7 @@ An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI 
 | `tag_manifest` | Create a new tag pointing at an existing tag or digest (equivalent to `docker tag`) |
 | `untag` | Remove a single tag reference without deleting the manifest or other tags pointing to the same digest |
 | `delete_tag` | Delete a manifest entirely by tag (dry-run by default, `confirm: true` to execute) |
+| `migrate` | Pull an image from an external registry and push it into this registry — no Docker daemon required, full multi-arch support |
 | `run_gc` | Run garbage collection (dry-run by default) |
 
 ## Running
@@ -127,6 +128,49 @@ Keys use `:` as a depth separator, reflecting the JSON structure. When setting a
 | `gc:registryImage` | `registry:3` | Registry image used for Docker-based GC. |
 | `gc:dockerNetwork` | `""` | Docker network for the GC container. Empty uses Docker's default bridge. Set to `host` if the GC container needs to reach a storage backend (e.g. MinIO) on the host. |
 | `log:level` | `info` | Tracing filter: `error`, `warn`, `info`, `debug`, `trace`. |
+
+---
+
+## Migrating images from external registries
+
+The `migrate` tool copies an image from any OCI-compatible registry into the managed registry using the OCI Distribution API directly. No Docker daemon is required on the host running registry-mcp.
+
+### What it does
+
+1. Fetches the manifest (or image index) from the source registry
+2. For each platform in a multi-arch image: copies the config blob and all layer blobs, skipping any that are already present at the destination
+3. Pushes the manifest (and index for multi-arch) to the target repository and tag
+
+### Source reference format
+
+`source` accepts standard Docker/OCI image references:
+
+| Example | Resolves to |
+|---|---|
+| `nginx:latest` | `registry-1.docker.io` / `library/nginx:latest` |
+| `myorg/myimage:v1` | `registry-1.docker.io` / `myorg/myimage:v1` |
+| `docker.io/library/nginx:alpine` | `registry-1.docker.io` / `library/nginx:alpine` |
+| `registry.example.com/myimage:v2` | `registry.example.com` / `myimage:v2` |
+| `registry.example.com:5000/myimage:v2` | `registry.example.com:5000` / `myimage:v2` |
+| `myimage@sha256:abc…` | pinned by digest |
+
+### Authentication
+
+For public registries leave `source_username` and `source_password` empty. If the source returns `401` without credentials, the tool returns a soft response with `requires_auth: true` and a message asking you to retry with credentials. If credentials are wrong, the tool returns an error.
+
+```json
+{
+  "source": "registry.example.com/myimage:v1",
+  "target_repository": "myimage",
+  "target_tag": "v1",
+  "source_username": "myuser",
+  "source_password": "mypassword"
+}
+```
+
+### Multi-arch images
+
+When the source is an image index (multi-arch), each child manifest and its blobs are copied individually, then the index manifest is pushed under the target tag. The response includes `is_multi_arch: true` and a count of manifests and blobs processed.
 
 ---
 
