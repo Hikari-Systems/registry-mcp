@@ -122,3 +122,11 @@ jobs:
           docker manifest push --insecure localhost:5000/${{ env.REPO_NAME }}:${{ github.sha }}
           docker manifest push --insecure localhost:5000/${{ env.REPO_NAME }}:${{ env.BRANCH_NAME }}
           docker manifest push --insecure localhost:5000/${{ env.REPO_NAME }}:latest
+
+      - name: Remove per-arch tags from GHCR
+        run: |
+          for ARCH in amd64 arm64; do
+            curl -sf -X DELETE \
+              -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+              "https://ghcr.io/v2/hikari-systems/${{ env.REPO_NAME }}/manifests/${{ github.sha }}-${ARCH}"
+          done
