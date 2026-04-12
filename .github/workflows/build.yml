@@ -79,6 +79,7 @@ jobs:
           REGISTRY_STORAGE_S3_BUCKET: hikari-docker-registry
           REGISTRY_HTTP_ADDR: :5000
           REGISTRY_HTTP_SECRET: ${{ secrets.DOCKER_REGISTRY_SECRET }}
+          REGISTRY_STORAGE_DELETE_ENABLED: "true"
         ports:
           - 5000:5000
     steps:
@@ -124,9 +125,17 @@ jobs:
           docker manifest push --insecure localhost:5000/${{ env.REPO_NAME }}:latest
 
       - name: Remove per-arch tags from GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
+          REGISTRY_TOKEN=$(curl -sf \
+            -u "${{ github.actor }}:${GH_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:hikari-systems/${{ env.REPO_NAME }}:pull,push,delete" \
+            | jq -r '.token')
           for ARCH in amd64 arm64; do
             curl -sf -X DELETE \
-              -H "Authorization: Bearer ${{ secrets.GH_TOKEN }}" \
+              -H "Authorization: Bearer ${REGISTRY_TOKEN}" \
               "https://ghcr.io/v2/hikari-systems/${{ env.REPO_NAME }}/manifests/${{ github.sha }}-${ARCH}"
+            curl -sf -X DELETE \
+              "http://localhost:5000/v2/${{ env.REPO_NAME }}/manifests/${{ github.sha }}-${ARCH}"
           done
