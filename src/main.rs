@@ -28,11 +28,10 @@ async fn main() -> anyhow::Result<()> {
     let ct = CancellationToken::new();
     let ct_shutdown = ct.clone();
 
-    let cfg_factory = Arc::clone(&cfg);
     let registry_factory = Arc::clone(&registry);
 
     let service = StreamableHttpService::new(
-        move || Ok(tools::RegistryMcp::new(Arc::clone(&cfg_factory), Arc::clone(&registry_factory))),
+        move || Ok(tools::RegistryMcp::new(Arc::clone(&registry_factory))),
         LocalSessionManager::default().into(),
         {
             let base = StreamableHttpServerConfig::default()

@@ -1,6 +1,6 @@
 # registry-mcp
 
-An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI registry. Exposes registry operations as tools that an LLM can call — browsing repositories and tags, inspecting manifests, deleting tags, and running garbage collection.
+An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI registry. Exposes registry operations as tools that an LLM can call — browsing repositories and tags, inspecting manifests, deleting tags, and migrating images.
 
 ## Tools
 
@@ -14,7 +14,6 @@ An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI 
 | `untag` | Remove a single tag reference without deleting the manifest or other tags pointing to the same digest |
 | `delete_tag` | Delete a manifest entirely by tag (dry-run by default, `confirm: true` to execute) |
 | `migrate` | Pull an image from an external registry and push it into this registry — no Docker daemon required, full multi-arch support |
-| `run_gc` | Run garbage collection (dry-run by default) |
 
 ---
 
@@ -149,7 +148,7 @@ Fetches the manifest for a tag or digest and returns its structure. For multi-pl
 
 Calculates the total on-disk blob footprint for all tags in a repository. Blobs shared between tags (common base layers) are counted only once in the unique total. Multi-platform image indexes are recursed into so every platform's layers are included. Tags that disappear mid-flight (deleted concurrently) are listed in `skipped_tags` rather than causing the whole call to fail.
 
-This is useful before running GC to understand how much storage is in use, or to identify which tags are contributing the most to storage costs.
+This is useful to understand how much storage is in use or to identify which tags are contributing the most to storage costs.
 
 **Parameters**
 
@@ -232,23 +231,25 @@ Creates a new tag pointing at the same manifest as an existing tag or digest. Eq
 
 ### `untag`
 
-Removes a single tag reference without touching the underlying manifest. Other tags pointing at the same digest are unaffected. The manifest itself — and any tags still referencing it — remain fully intact and pullable.
+Removes one or more tag references (up to 20) without touching the underlying manifests. Other tags pointing at the same digest are unaffected. The manifests themselves — and any tags still referencing them — remain fully intact and pullable.
 
-This is useful for cleaning up temporary or CI tags (`pr-123`, `branch-main`) without disrupting `latest` or version tags that point to the same image.
+Progress notifications are emitted as each tag is removed. Tags that fail are collected in `failed` rather than aborting the whole call.
+
+This is useful for bulk-cleaning temporary or CI tags (`pr-123`, `branch-main`) without disrupting `latest` or version tags that point to the same image.
 
 **Parameters**
 
 | Parameter | Required | Description |
 |---|---|---|
 | `repository` | yes | Repository name, e.g. `myapp/api` |
-| `tag` | yes | Tag to remove |
+| `tags` | yes | Array of tag names to remove (1–20) |
 
-**Example — remove a CI branch tag**
+**Example — remove several CI branch tags**
 
 ```json
 {
   "repository": "myapp/api",
-  "tag": "branch-feature-x"
+  "tags": ["branch-feature-x", "branch-feature-y", "pr-42"]
 }
 ```
 
@@ -257,12 +258,24 @@ This is useful for cleaning up temporary or CI tags (`pr-123`, `branch-main`) wi
 ```json
 {
   "repository": "myapp/api",
-  "tag": "branch-feature-x",
-  "message": "Tag 'branch-feature-x' removed from myapp/api. The manifest is still present and reachable by digest or other tags."
+  "removed": ["branch-feature-x", "branch-feature-y", "pr-42"],
+  "failed": [],
+  "message": "3 tag(s) removed from myapp/api."
 }
 ```
 
-Contrast with `delete_tag`: `untag` removes the tag reference only; `delete_tag` resolves the tag to a digest and deletes the manifest entirely, which also removes all other tags pointing to it.
+If some tags fail (e.g. already deleted), the successful removals are still applied and both lists are populated:
+
+```json
+{
+  "repository": "myapp/api",
+  "removed": ["branch-feature-x", "branch-feature-y"],
+  "failed": [{ "tag": "pr-42", "error": "not found: myapp/api:pr-42" }],
+  "message": "2 tag(s) removed, 1 failed from myapp/api."
+}
+```
+
+Contrast with `delete_tag`: `untag` removes tag references only; `delete_tag` resolves the tag to a digest and deletes the manifest entirely, which also removes all other tags pointing to it.
 
 ---
 
@@ -272,7 +285,7 @@ Deletes a manifest from the registry by resolving the tag to its digest and issu
 
 Protected by a `confirm` guard: the default call is a dry run that resolves and reports the digest without deleting anything. Set `confirm: true` to perform the actual deletion.
 
-> **Note:** deleting a manifest only removes the manifest object. The underlying layer blobs remain in storage until garbage collection is run. Use `run_gc` afterwards to reclaim disk space.
+> **Note:** deleting a manifest removes the manifest object but the underlying layer blobs remain in storage until garbage collection is run. See [Garbage Collection](#garbage-collection).
 
 **Parameters**
 
@@ -314,9 +327,27 @@ Response:
   "tag": "1.0.0",
   "digest": "sha256:aaa111...",
   "deleted": true,
-  "message": "Manifest sha256:aaa111... deleted. Run run_gc to reclaim blob storage."
+  "message": "Manifest sha256:aaa111... deleted."
 }
 ```
+
+---
+
+## Garbage Collection
+
+Docker Distribution uses a two-phase mark-and-sweep garbage collector. When you delete a tag or manifest via the API, only the reference is removed — the underlying layer blobs stay in storage. Disk space is not reclaimed until GC is run explicitly.
+
+GC must be performed by the registry binary itself, pointed at the same storage backend as the live registry. You cannot simply delete blobs from S3 or a filesystem directly.
+
+To run GC against a `registry:3` instance:
+
+```bash
+registry garbage-collect /etc/docker/registry/config.yml --delete-untagged
+```
+
+`storage.delete.enabled: true` must be present in the registry config, otherwise the registry API will also return `405 Method Not Allowed` for manifest deletes.
+
+For full details on how the collector works and how to configure it, see the [official garbage collection documentation](https://distribution.github.io/distribution/about/garbage-collection/).
 
 ---
 
@@ -400,65 +431,6 @@ If the source registry requires credentials and none are provided, the tool retu
 
 This allows the LLM to prompt the user for credentials and retry rather than surfacing an opaque error.
 
----
-
-### `run_gc`
-
-Runs garbage collection on the registry to permanently delete blobs that are no longer referenced by any manifest. This is the step required after `delete_tag` to actually reclaim disk space.
-
-Two strategies are supported, selected automatically:
-- **Shell script** (`gc:scriptPath`) — invokes your own GC script, if configured
-- **Docker container** (`gc:registryConfigPath`) — bollard spins up a short-lived `registry:3` container pointing at the same storage backend and runs `registry garbage-collect`. Log output is streamed as MCP progress notifications in real time.
-
-Defaults to `dry_run: true` — always inspect the output before running for real.
-
-See [Garbage Collection](#garbage-collection) for setup instructions.
-
-**Parameters**
-
-| Parameter | Required | Description |
-|---|---|---|
-| `dry_run` | no | Report what would be deleted without removing anything. Defaults to `true` |
-| `delete_untagged` | no | Pass `--delete-untagged` to remove manifests with no tags. Defaults to `true` |
-
-**Example — dry run (default)**
-
-```json
-{}
-```
-
-Response:
-
-```json
-{
-  "strategy": "docker",
-  "dry_run": true,
-  "exit_code": 0,
-  "stdout": "INFO[0000] Deleting blob: sha256:aaa111...\nINFO[0000] Deleting blob: sha256:bbb222...\n",
-  "stderr": "",
-  "message": ""
-}
-```
-
-**Example — real GC run**
-
-```json
-{ "dry_run": false, "delete_untagged": true }
-```
-
-If GC is not configured, the response includes a message explaining what to set up rather than returning an error:
-
-```json
-{
-  "strategy": "unavailable",
-  "dry_run": true,
-  "exit_code": null,
-  "stdout": "",
-  "stderr": "",
-  "message": "No GC strategy is configured. To enable GC, set one of: gc.scriptPath (path to a shell script) or gc.registryConfigPath (path to a registry config.yml for Docker-based GC)."
-}
-```
-
 ## Running
 
 ### Docker
@@ -479,15 +451,6 @@ docker run -p 3000:3000 \
   ghcr.io/hikari-systems/registry-mcp:latest
 ```
 
-For Docker-based GC, also mount the Docker socket:
-
-```bash
-docker run -p 3000:3000 \
-  -v /path/to/config.json:/sandbox/config.json \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  ghcr.io/hikari-systems/registry-mcp:latest
-```
-
 ### docker-compose
 
 ```yaml
@@ -498,8 +461,6 @@ services:
       - "3000:3000"
     volumes:
       - /path/to/configs/registry-mcp:/sandbox
-      # Uncomment for Docker-based GC:
-      # - /var/run/docker.sock:/var/run/docker.sock
 ```
 
 ### Binary
@@ -538,13 +499,6 @@ Configuration is loaded in priority order (lowest → highest):
     "insecureSkipVerify": false,
     "caCertFile": ""
   },
-  "gc": {
-    "scriptPath": "",
-    "registryConfigPath": "",
-    "dockerSocket": "/var/run/docker.sock",
-    "registryImage": "registry:3",
-    "dockerNetwork": ""
-  },
   "log": {
     "level": "info"
   }
@@ -565,156 +519,7 @@ Keys use `:` as a depth separator, reflecting the JSON structure. When setting a
 | `registry:bearerToken` | `""` | Static bearer token. Takes precedence over Basic auth when non-empty. |
 | `registry:insecureSkipVerify` | `false` | Skip TLS certificate verification. For self-signed registries only. |
 | `registry:caCertFile` | `""` | Path to a PEM CA certificate to add to the trust store. |
-| `gc:scriptPath` | `""` | Absolute path to a shell script for GC. Takes priority over Docker-based GC when set. See [Garbage Collection](#garbage-collection). |
-| `gc:registryConfigPath` | `""` | Path to a registry `config.yml` to mount into the GC container. Required for Docker-based GC. |
-| `gc:dockerSocket` | `/var/run/docker.sock` | Docker socket path. |
-| `gc:registryImage` | `registry:3` | Registry image used for Docker-based GC. |
-| `gc:dockerNetwork` | `""` | Docker network for the GC container. Empty uses Docker's default bridge. Set to `host` if the GC container needs to reach a storage backend (e.g. MinIO) on the host. |
 | `log:level` | `info` | Tracing filter: `error`, `warn`, `info`, `debug`, `trace`. |
-
----
-
-## Garbage Collection
-
-### How registry GC works
-
-Docker Distribution (the software behind `registry:3`) uses a two-phase mark-and-sweep garbage collector. When you delete a tag via the registry API, only the manifest reference is removed — the underlying layer blobs remain in storage. GC is the process that walks all remaining manifests, identifies every blob still referenced, and deletes everything else.
-
-The critical constraint is that **GC must be run by the registry binary itself**, pointed at the same storage backend as the live registry. You cannot simply delete files from S3 or a filesystem directly — the registry binary understands the content-addressable blob graph and is the only thing that can safely determine which blobs are unreferenced.
-
-This means running GC requires spinning up a `registry:3` process with:
-- The same storage backend configuration as the live registry (same S3 bucket, same credentials, same endpoint)
-- `storage.delete.enabled: true` in the config
-- Access to the storage backend over the network
-
-registry-mcp handles this automatically via the Docker strategy described below.
-
-### Strategy selection
-
-```
-gc:scriptPath set and file exists          →  Shell script
-gc:registryConfigPath set and file exists  →  Docker container (bollard)
-neither                                    →  Unavailable (tool returns a message, not an error)
-```
-
-Strategy is resolved at call time, not startup — you can add or remove the script file without restarting the server.
-
----
-
-### Docker strategy (bollard)
-
-[bollard](https://github.com/fussybeaver/bollard) is the Rust Docker API client used to manage the GC container lifecycle entirely from within registry-mcp. No shell, no `docker` CLI — the container is created, started, monitored, and removed via the Docker API over the socket.
-
-**Lifecycle:**
-
-1. Inspects the local Docker daemon for `gc:registryImage` (`registry:3` by default); pulls if not present
-2. Creates a short-lived container with:
-   - `gc:registryConfigPath` bind-mounted read-only at `/etc/docker/registry/config.yml`
-   - `REGISTRY_HTTP_ADDR` cleared (the container runs GC only — no HTTP listener)
-   - `gc:dockerNetwork` applied if set
-3. Runs `/bin/registry garbage-collect /etc/docker/registry/config.yml [--dry-run] [--delete-untagged]`
-4. Streams log output line-by-line as MCP progress notifications in real time
-5. Waits for the process to exit and captures the exit code
-6. Removes the container — always, even if GC failed
-
-The tool response includes `strategy`, `dry_run`, `exit_code`, `stdout`, and `stderr` regardless of success or failure.
-
-#### Giving registry-mcp access to the Docker daemon
-
-bollard connects to the socket at `gc:dockerSocket` (default `/var/run/docker.sock`). When running registry-mcp in a container, the socket must be bind-mounted:
-
-```bash
-docker run -p 3000:3000 \
-  -v /path/to/gc-config.yml:/etc/registry-mcp/gc-config.yml \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -e gc__registryConfigPath=/etc/registry-mcp/gc-config.yml \
-  ghcr.io/hikari-systems/registry-mcp:latest
-```
-
-Or in docker-compose:
-
-```yaml
-services:
-  registry-mcp:
-    image: ghcr.io/hikari-systems/registry-mcp:latest
-    volumes:
-      - /path/to/configs/registry-mcp:/sandbox
-      - /var/run/docker.sock:/var/run/docker.sock
-```
-
-On Linux the Docker socket is owned by `root:docker`. The registry-mcp container runs as `nobody` — if you see permission errors on the socket, either add the container user to the `docker` group or adjust socket permissions on the host.
-
-#### Creating the GC config from a live registry
-
-The GC container needs a `config.yml` that mirrors the live registry's storage configuration. If your live registry is configured entirely via environment variables (a common pattern with docker-compose), you need to write an equivalent `config.yml` file and make it available to registry-mcp.
-
-Example — if your live registry is configured like this:
-
-```yaml
-# docker-compose.yml (live registry)
-services:
-  registry:
-    image: registry:3
-    environment:
-      REGISTRY_STORAGE: s3
-      REGISTRY_STORAGE_S3_ACCESSKEY: AKIAIOSFODNN7EXAMPLE
-      REGISTRY_STORAGE_S3_SECRETKEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-      REGISTRY_STORAGE_S3_BUCKET: my-registry-bucket
-      REGISTRY_STORAGE_S3_REGION: us-east-1
-      REGISTRY_STORAGE_DELETE_ENABLED: "true"
-```
-
-The equivalent `config.yml` to give to the GC container is:
-
-```yaml
-version: 0.1
-storage:
-  s3:
-    accesskey: AKIAIOSFODNN7EXAMPLE
-    secretkey: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-    bucket: my-registry-bucket
-    region: us-east-1
-  delete:
-    enabled: true
-```
-
-Save this file somewhere accessible to registry-mcp (e.g. `/etc/registry-mcp/gc-config.yml` or inside the `/sandbox` mount) and set:
-
-```bash
-gc__registryConfigPath=/etc/registry-mcp/gc-config.yml
-```
-
-`storage.delete.enabled: true` must be present in the GC config. Without it the registry binary refuses to delete anything, and `delete_tag` also returns `405 Method Not Allowed` from the live registry.
-
-#### Network access for the GC container
-
-The GC container is created on Docker's default bridge network. It needs to be able to reach the storage backend (S3, MinIO, etc.) over the network.
-
-- **AWS S3:** no special network config needed — outbound HTTPS to AWS works from the default bridge.
-- **Self-hosted MinIO on the same host:** the GC container cannot reach `localhost` on the host from inside the default bridge. Set `gc:dockerNetwork` to `host` to use host networking, then use `http://127.0.0.1:<minio-port>` as the endpoint in the GC config.
-- **MinIO in the same docker-compose stack:** set `gc:dockerNetwork` to the compose network name (typically `<project>_default`) so the GC container can resolve the MinIO service by hostname.
-
----
-
-### Shell script strategy
-
-Set `gc:scriptPath` to the absolute path of an executable script. The server invokes it as:
-
-```
-<scriptPath> [--dry-run] [--delete-untagged]
-```
-
-The following environment variables are forwarded to the script:
-
-| Variable | Value |
-|---|---|
-| `REGISTRY_URL` | `registry:baseUrl` |
-| `REGISTRY_USERNAME` | `registry:username` |
-| `REGISTRY_PASSWORD` | `registry:password` |
-| `DRY_RUN` | `true` or `false` |
-| `DELETE_UNTAGGED` | `true` or `false` |
-
-stdout and stderr are captured in full and returned in the tool response. Unlike the Docker strategy, there is no incremental streaming — output is returned only after the script exits.
 
 ---
 
@@ -780,11 +585,11 @@ Requires Rust 1.85+ (edition 2024).
 
 ## Running integration tests
 
-The GC integration tests require Docker and the test compose stack:
+The migrate integration tests require Docker and the test compose stack:
 
 ```bash
 docker compose -f tests/docker-compose.test.yml up -d --wait
-REGISTRY_INTEGRATION_TEST=1 cargo test --test gc_integration -- --nocapture
+REGISTRY_INTEGRATION_TEST=1 cargo test --test migrate_integration -- --nocapture
 docker compose -f tests/docker-compose.test.yml down -v
 ```
 

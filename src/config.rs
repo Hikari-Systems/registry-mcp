@@ -7,7 +7,6 @@ use serde_json::Value;
 pub struct Config {
     pub server: ServerConfig,
     pub registry: RegistryConfig,
-    pub gc: GcConfig,
     pub log: LogConfig,
 }
 
@@ -49,22 +48,6 @@ pub struct RegistryConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub struct GcConfig {
-    #[serde(rename = "scriptPath")]
-    pub script_path: String,
-    #[serde(rename = "registryConfigPath")]
-    pub registry_config_path: String,
-    #[serde(rename = "dockerSocket")]
-    pub docker_socket: String,
-    #[serde(rename = "registryImage")]
-    pub registry_image: String,
-    /// Docker network to attach the GC container to. Empty string = Docker default (bridge).
-    /// Set to "host" to use host networking (required when MinIO is exposed on the host).
-    #[serde(rename = "dockerNetwork")]
-    pub docker_network: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
 pub struct LogConfig {
     pub level: String,
 }
@@ -101,21 +84,6 @@ pub fn validate(cfg: &Config) -> Result<()> {
         tracing::warn!(
             "Both registry:bearerToken and registry:username are set — bearerToken takes precedence"
         );
-    }
-
-    if !cfg.gc.script_path.is_empty() {
-        use std::os::unix::fs::PermissionsExt;
-        let p = std::path::Path::new(&cfg.gc.script_path);
-        if !p.exists() {
-            bail!("gc:scriptPath '{}' does not exist", cfg.gc.script_path);
-        }
-        let mode = std::fs::metadata(p)
-            .with_context(|| format!("Cannot read gc:scriptPath '{}'", cfg.gc.script_path))?
-            .permissions()
-            .mode();
-        if mode & 0o111 == 0 {
-            bail!("gc:scriptPath '{}' is not executable", cfg.gc.script_path);
-        }
     }
 
     Ok(())

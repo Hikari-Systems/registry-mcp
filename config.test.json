@@ -11,12 +11,6 @@
     "insecureSkipVerify": false,
     "caCertFile": ""
   },
-  "gc": {
-    "scriptPath": "",
-    "registryConfigPath": "",
-    "dockerSocket": "/var/run/docker.sock",
-    "registryImage": "registry:3"
-  },
   "log": {
     "level": "debug"
   }

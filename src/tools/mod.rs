@@ -1,6 +1,5 @@
 pub mod catalog;
 pub mod delete;
-pub mod gc;
 pub mod manifest;
 pub mod migrate;
 pub mod tag;
@@ -16,22 +15,20 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 
-use crate::{config::Config, registry::client::RegistryClient};
+use crate::registry::client::RegistryClient;
 
 /// The MCP server handler.  All tool methods delegate to free functions in the
 /// sub-modules; this struct is a thin dispatch layer required by `rmcp`.
 #[derive(Clone)]
 pub struct RegistryMcp {
-    pub config: Arc<Config>,
     pub registry: Arc<RegistryClient>,
     #[allow(dead_code)]
     tool_router: ToolRouter<RegistryMcp>,
 }
 
 impl RegistryMcp {
-    pub fn new(config: Arc<Config>, registry: Arc<RegistryClient>) -> Self {
+    pub fn new(registry: Arc<RegistryClient>) -> Self {
         Self {
-            config,
             registry,
             tool_router: Self::tool_router(),
         }
@@ -83,8 +80,7 @@ impl RegistryMcp {
 
     #[tool(description = "Delete a manifest by tag. Resolves the digest first and \
         returns it for confirmation. Protected by a `confirm` guard — defaults to \
-        `false` (dry run). Set `confirm: true` to perform the actual deletion. \
-        Note: blobs are not immediately reclaimed — run `run_gc` afterwards.")]
+        `false` (dry run). Set `confirm: true` to perform the actual deletion.")]
     async fn delete_tag(
         &self,
         Parameters(params): Parameters<delete::DeleteTagParams>,
@@ -92,14 +88,16 @@ impl RegistryMcp {
         delete::delete_tag(&self.registry, params).await
     }
 
-    #[tool(description = "Remove a single tag reference without deleting the underlying \
-        manifest. Other tags pointing at the same digest are unaffected. \
+    #[tool(description = "Remove one or more tag references (up to 20) without deleting \
+        the underlying manifests. Other tags pointing at the same digest are unaffected. \
+        Progress notifications are emitted as each tag is removed. \
         Use `delete_tag` (confirm: true) instead if you want to remove the manifest entirely.")]
     async fn untag(
         &self,
         Parameters(params): Parameters<tag::UntagParams>,
+        ctx: RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        tag::untag(&self.registry, params).await
+        tag::untag(&self.registry, params, ctx).await
     }
 
     #[tool(description = "Create a new tag pointing at the same manifest as an existing \
@@ -110,18 +108,6 @@ impl RegistryMcp {
         Parameters(params): Parameters<tag::TagManifestParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         tag::tag_manifest(&self.registry, params).await
-    }
-
-    #[tool(description = "Run garbage collection on the registry. Selects strategy \
-        automatically: shell script (if configured) → Docker container → Unavailable. \
-        Defaults to dry_run=true — set `dry_run: false` to permanently remove \
-        unreferenced blobs. Docker GC streams log lines as progress notifications.")]
-    async fn run_gc(
-        &self,
-        Parameters(params): Parameters<gc::RunGcParams>,
-        ctx: RequestContext<rmcp::RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
-        gc::run_gc(Arc::clone(&self.config), params, ctx).await
     }
 
     #[tool(description = "Pull an image from an external registry and push it into \
@@ -153,9 +139,34 @@ impl ServerHandler for RegistryMcp {
             env!("CARGO_PKG_VERSION"),
         ))
         .with_instructions(
-            "MCP server for managing a self-hosted Docker Distribution (OCI) registry. \
-            Provides tools to browse repositories and tags, inspect manifests and disk \
-            usage, delete tags (soft-delete), and run garbage collection."
+            "MCP server for managing a self-hosted Docker Distribution (OCI) registry.\n\
+            \n\
+            Available tools:\n\
+            - list_repositories: paginated list of all repositories in the registry\n\
+            - list_tags: paginated list of tags for a given repository\n\
+            - get_manifest: manifest details for a tag or digest (layers, size, platform info)\n\
+            - get_repository_disk_usage: total deduplicated blob footprint for all tags in a repository\n\
+            - tag_manifest: create a new tag pointing at an existing tag or digest (like `docker tag`)\n\
+            - untag: remove one or more tag references (up to 20) without deleting the underlying manifest\n\
+            - delete_tag: resolve a tag to its digest and delete the manifest entirely (dry-run by default)\n\
+            - migrate: pull an image from an external registry and push it into this registry via the OCI API\n\
+            \n\
+            Example workflows:\n\
+            \n\
+            Cleaning up old tags: use list_tags to enumerate tags in a repository, \
+            get_repository_disk_usage to understand which tags are consuming the most space, \
+            then untag to remove stale tag references (CI branch tags, old feature tags) or \
+            delete_tag (confirm: true) to permanently remove manifests you no longer need. \
+            On self-hosted registries, deleted manifests do not free disk space immediately — \
+            the registry garbage collector must be run externally after deletions to reclaim \
+            storage. Managed registries (ECR, GAR, etc.) handle this automatically.\n\
+            \n\
+            Promoting a build: use tag_manifest to point a stable tag (e.g. `stable`, `production`) \
+            at a tested image tag or digest without copying any data.\n\
+            \n\
+            Mirroring external images: use migrate to pull an image from Docker Hub or another \
+            registry into this one. Multi-arch image indexes are handled transparently. \
+            Blobs already present at the destination are skipped, so re-runs are safe."
                 .to_string(),
         )
     }

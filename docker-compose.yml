@@ -5,8 +5,6 @@ services:
       - "3000:3000"
     volumes:
       - ../../configs/registry-mcp:/sandbox
-      # Mount Docker socket only if using Docker GC strategy:
-      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "/app/registry-mcp", "healthcheck"]
       interval: 10s

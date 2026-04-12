@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use thiserror::Error;
 
 /// Errors returned by OCI Distribution API calls.
@@ -26,21 +25,3 @@ pub enum RegistryError {
     InvalidResponse(String),
 }
 
-/// Errors returned by GC strategy execution.
-#[derive(Debug, Error)]
-pub enum GcError {
-    #[error("GC script not found or not executable: {0}")]
-    ScriptNotFound(PathBuf),
-
-    #[error("Failed to spawn GC script: {0}")]
-    ScriptSpawnFailed(#[from] std::io::Error),
-
-    #[error("Docker API error: {0}")]
-    DockerApi(#[from] bollard::errors::Error),
-
-    #[error("Image pull failed for '{image}': {detail}")]
-    ImagePullFailed { image: String, detail: String },
-
-    #[error("Container creation failed: {0}")]
-    ContainerCreateFailed(String),
-}

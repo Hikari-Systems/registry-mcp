@@ -137,11 +137,19 @@ pub struct DiskUsageOutput {
     pub skipped_tags: Vec<String>,
 }
 
+/// A tag that could not be removed in an `untag` call.
+#[derive(Debug, Serialize)]
+pub struct UntagFailure {
+    pub tag: String,
+    pub error: String,
+}
+
 /// Output of `untag`.
 #[derive(Debug, Serialize)]
 pub struct UntagOutput {
     pub repository: String,
-    pub tag: String,
+    pub removed: Vec<String>,
+    pub failed: Vec<UntagFailure>,
     pub message: String,
 }
 
@@ -162,26 +170,6 @@ pub struct DeleteTagOutput {
     pub tag: String,
     pub digest: String,
     pub deleted: bool,
-    pub message: String,
-}
-
-/// Which GC strategy was selected.
-#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum GcStrategy {
-    Script,
-    Docker,
-    Unavailable,
-}
-
-/// Output of `run_gc`.
-#[derive(Debug, Serialize)]
-pub struct RunGcOutput {
-    pub strategy: GcStrategy,
-    pub dry_run: bool,
-    pub exit_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
     pub message: String,
 }
 

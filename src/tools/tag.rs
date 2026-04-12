@@ -1,41 +1,84 @@
 use std::sync::Arc;
 
-use rmcp::{ErrorData, model::CallToolResult};
+use rmcp::{
+    ErrorData, RoleServer,
+    model::{CallToolResult, NumberOrString, ProgressNotificationParam, ProgressToken},
+    service::RequestContext,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::{registry::client::RegistryClient, types::{TagManifestOutput, UntagOutput}};
+use crate::{registry::client::RegistryClient, types::{TagManifestOutput, UntagFailure, UntagOutput}};
 
-use super::catalog::{ok_json, registry_err};
+use super::catalog::ok_json;
+
+const MAX_UNTAG: usize = 20;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UntagParams {
     /// Repository name, e.g. `library/nginx`
     pub repository: String,
-    /// Tag to remove. Only this tag reference is deleted — the manifest and
-    /// any other tags pointing to the same digest are unaffected.
-    pub tag: String,
+    /// Tags to remove (1–20). Each tag reference is deleted individually —
+    /// the manifest and any other tags pointing to the same digest are unaffected.
+    pub tags: Vec<String>,
 }
 
-/// Remove a single tag reference without deleting the underlying manifest.
+/// Remove one or more tag references without deleting the underlying manifests.
 /// Uses DELETE by tag name rather than by digest, so other tags pointing at
 /// the same manifest remain intact.
 pub async fn untag(
     registry: &Arc<RegistryClient>,
     params: UntagParams,
+    ctx: RequestContext<RoleServer>,
 ) -> Result<CallToolResult, ErrorData> {
-    registry
-        .delete_tag_reference(&params.repository, &params.tag)
-        .await
-        .map_err(registry_err)?;
+    if params.tags.is_empty() {
+        return Err(ErrorData::invalid_params("tags must not be empty", None));
+    }
+    if params.tags.len() > MAX_UNTAG {
+        return Err(ErrorData::invalid_params(
+            format!("too many tags: {} requested, maximum is {MAX_UNTAG}", params.tags.len()),
+            None,
+        ));
+    }
+
+    let total = params.tags.len();
+    let mut removed = Vec::with_capacity(total);
+    let mut failed: Vec<UntagFailure> = Vec::new();
+
+    for (i, tag) in params.tags.iter().enumerate() {
+        match registry.delete_tag_reference(&params.repository, tag).await {
+            Ok(()) => {
+                removed.push(tag.clone());
+                ctx.peer.notify_progress(ProgressNotificationParam {
+                    progress_token: ProgressToken(NumberOrString::String("untag".into())),
+                    progress: (i + 1) as f64,
+                    total: Some(total as f64),
+                    message: Some(format!("Removed '{tag}' ({}/{total})", i + 1)),
+                }).await.ok();
+            }
+            Err(e) => {
+                failed.push(UntagFailure { tag: tag.clone(), error: e.to_string() });
+                ctx.peer.notify_progress(ProgressNotificationParam {
+                    progress_token: ProgressToken(NumberOrString::String("untag".into())),
+                    progress: (i + 1) as f64,
+                    total: Some(total as f64),
+                    message: Some(format!("Failed '{tag}': {e} ({}/{total})", i + 1)),
+                }).await.ok();
+            }
+        }
+    }
+
+    let message = match (removed.len(), failed.len()) {
+        (r, 0) => format!("{r} tag(s) removed from {}.", params.repository),
+        (0, f) => format!("All {f} tag(s) failed to remove from {}.", params.repository),
+        (r, f) => format!("{r} tag(s) removed, {f} failed from {}.", params.repository),
+    };
 
     ok_json(&UntagOutput {
-        message: format!(
-            "Tag '{}' removed from {}. The manifest is still present and reachable by digest or other tags.",
-            params.tag, params.repository
-        ),
         repository: params.repository,
-        tag: params.tag,
+        removed,
+        failed,
+        message,
     })
 }
 

@@ -6,7 +6,7 @@ Guidance for AI assistants working on this codebase.
 
 ## What this service does
 
-An MCP (Model Context Protocol) server that wraps a Docker Distribution / OCI registry. Exposes six tools: `list_repositories`, `list_tags`, `get_manifest`, `get_repository_disk_usage`, `delete_tag`, and `run_gc`. Uses the Streamable HTTP MCP transport (rmcp 1.4.0). Garbage collection is handled either by shelling out to a script or by managing a `registry:3` Docker container lifecycle via bollard.
+An MCP (Model Context Protocol) server that wraps a Docker Distribution / OCI registry. Exposes eight tools: `list_repositories`, `list_tags`, `get_manifest`, `get_repository_disk_usage`, `delete_tag`, `tag_manifest`, `untag`, and `migrate`. Uses the Streamable HTTP MCP transport (rmcp 1.4.0).
 
 ---
 
@@ -17,8 +17,8 @@ src/
   main.rs                   — startup: config load, registry client, MCP server bind, healthcheck subcommand
   lib.rs                    — re-exports all modules for integration test access
   config.rs                 — Config struct, load() (3-layer JSON merge + env overrides), validate()
-  error.rs                  — RegistryError and GcError enums (thiserror)
-  types.rs                  — shared data types: raw API shapes, all tool output structs, GcStrategy enum
+  error.rs                  — RegistryError enum (thiserror)
+  types.rs                  — shared data types: raw API shapes, all tool output structs
   migrate.rs                — parse_source(), copy_image(), blob copy helpers (used by tools/migrate.rs)
   registry/
     mod.rs                  — module re-exports
@@ -31,13 +31,8 @@ src/
     delete.rs               — delete_tag
     tag.rs                  — tag_manifest, untag
     migrate.rs              — migrate (MigrateParams, thin wrapper over migrate::copy_image)
-    gc.rs                   — run_gc (strategy dispatch)
-  gc/
-    mod.rs                  — resolve_strategy() — script → docker → unavailable
-    script.rs               — run_script(): spawn shell script, capture output
-    docker.rs               — run_docker_gc(): full bollard container lifecycle
 tests/
-  gc_integration.rs         — integration tests for Docker GC cleanup (bollard)
+  migrate_integration.rs    — integration tests for migrate tool
   docker-compose.test.yml   — MinIO + registry:3 for integration tests
 ```
 
@@ -74,20 +69,6 @@ Graceful shutdown via `CancellationToken` on SIGINT.
 - Otherwise, `registry.username` + `registry.password` are sent as Basic auth.
 - On 401, the client parses the `WWW-Authenticate: Bearer realm=...` challenge, fetches a token, caches it in-memory, and retries the request once.
 
-### GC strategies (`gc/`)
-
-`resolve_strategy()` is called at tool invocation time (not startup) so operators can add/remove the script file without restarting the server.
-
-**Docker strategy** (`gc/docker.rs`): bollard manages the full container lifecycle — inspect, optional pull, create (with `registry-mcp.gc=true` label and optional network mode), start, stream logs as MCP progress notifications, wait for exit, remove. The container is **always removed** after the run, even on non-zero exit. Cleanup errors are logged at `warn` and do not mask the GC result.
-
-The `ctx: Option<RequestContext<RoleServer>>` parameter is `Some` in production (emits progress notifications) and `None` in integration tests (no MCP peer connected).
-
-**Shell script strategy** (`gc/script.rs`): `tokio::process::Command` with `stdout` and `stderr` piped; `wait_with_output()` blocks until completion — no incremental streaming possible.
-
-### Docker GC container label
-
-Every GC container is created with label `registry-mcp.gc=true`. This lets integration tests count GC containers without interfering with the compose registry container (which has no such label). Do not remove this label.
-
 ### `get_repository_disk_usage` (`tools/manifest.rs`)
 
 Fetches all tags, then all manifests. For OCI image indexes, recursively fetches child manifests via `future::join_all` (parallelised per index). Blob digests are deduplicated across tags. Tags that 404 mid-flight are added to `skipped_tags` rather than failing the whole call.
@@ -102,11 +83,13 @@ Auth: the bearer token fetched during the GET is cached and reused for the PUT. 
 
 ### `untag` (`tools/tag.rs`)
 
-Issues `DELETE /v2/<name>/manifests/<tag>` using the tag name directly (not the digest). Registry:3 treats this as removing only that tag reference — the manifest blob and any other tags pointing to the same digest are unaffected.
+Accepts a `tags: Vec<String>` (1–20 items). Validates length at entry; returns `ErrorData::invalid_params` if the list is empty or exceeds 20. Iterates sequentially — each tag issues `DELETE /v2/<name>/manifests/<tag>` using the tag name directly (not the digest). Registry:3 treats this as removing only that tag reference — the manifest blob and any other tags pointing to the same digest are unaffected.
+
+A progress notification is emitted after each attempt (success or failure). Failed tags are collected into `failed: Vec<UntagFailure>` rather than aborting the loop. The response always returns both `removed` and `failed` lists.
 
 Contrast with `delete_tag`, which resolves the tag to a digest first and then issues `DELETE /v2/<name>/manifests/<digest>`, removing the manifest entirely regardless of how many tags reference it.
 
-`untag` has no dry-run guard — the operation is scoped to a single tag reference and the manifest is preserved.
+`untag` has no dry-run guard — the operation is scoped to tag references and manifests are preserved.
 
 ### `migrate` (`migrate.rs`, `tools/migrate.rs`)
 
@@ -183,14 +166,12 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=15s --retries=3 \
 
 ## Integration tests
 
-Located in `tests/gc_integration.rs`. Require Docker and the test compose stack (`tests/docker-compose.test.yml`). Skipped unless `REGISTRY_INTEGRATION_TEST=1` is set.
-
-The two tests (`test_docker_gc_cleanup_on_success`, `test_docker_gc_cleanup_on_failure`) are annotated `#[serial]` (via `serial_test`) because they both query Docker by the `registry-mcp.gc=true` label and would interfere if run in parallel.
+Located in `tests/migrate_integration.rs`. Require Docker and the test compose stack (`tests/docker-compose.test.yml`). Skipped unless `REGISTRY_INTEGRATION_TEST=1` is set.
 
 To run:
 ```bash
 docker compose -f tests/docker-compose.test.yml up -d --wait
-REGISTRY_INTEGRATION_TEST=1 cargo test --test gc_integration -- --nocapture
+REGISTRY_INTEGRATION_TEST=1 cargo test --test migrate_integration -- --nocapture
 docker compose -f tests/docker-compose.test.yml down -v
 ```
 
@@ -200,7 +181,4 @@ docker compose -f tests/docker-compose.test.yml down -v
 
 - Config field names are **case-sensitive**. `baseurl` is not `baseUrl`. Env vars use the same casing: `registry__baseUrl`, not `registry__baseurl`.
 - `delete_tag` defaults to `confirm: false` (dry run). The digest is resolved and reported, but nothing is deleted until the caller passes `confirm: true`.
-- `run_gc` defaults to both `dry_run: true` and `delete_untagged: true`. Pass `dry_run: false` explicitly to perform real GC.
-- Blob storage is not reclaimed by `delete_tag` alone — GC must be run afterward to free disk space.
-- The GC container is created with no restart policy. If it exits non-zero the result is surfaced in the tool response (`exit_code`, `stderr`), not as a Rust error.
-- `gc.dockerNetwork: "host"` is required when the GC container needs to reach a storage backend (e.g. MinIO) that is only exposed on the host network.
+- Blob storage is not reclaimed by `delete_tag` alone — the registry's own garbage collector must be run externally to free disk space.
