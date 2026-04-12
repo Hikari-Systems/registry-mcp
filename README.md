@@ -1,6 +1,10 @@
 # registry-mcp
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI registry. Exposes registry operations as tools that an LLM can call — browsing repositories and tags, inspecting manifests, deleting tags, and migrating images.
+
+Licensed under the [Apache License 2.0](LICENSE).
 
 ## Running
 
@@ -74,6 +78,40 @@ Configuration is loaded in priority order (lowest → highest):
     "level": "info"
   }
 }
+```
+
+### Environment variable examples
+
+All config keys can be set via `-e` using `__` as the depth separator and exact camelCase names:
+
+```bash
+# Basic auth
+docker run -p 3000:3000 \
+  -e registry__baseUrl=https://registry.example.com \
+  -e registry__username=myuser \
+  -e registry__password=mypassword \
+  ghcr.io/hikari-systems/registry-mcp:latest
+
+# Static bearer token instead of basic auth
+docker run -p 3000:3000 \
+  -e registry__baseUrl=https://registry.example.com \
+  -e registry__bearerToken=mytoken \
+  ghcr.io/hikari-systems/registry-mcp:latest
+
+# Self-signed certificate registry
+docker run -p 3000:3000 \
+  -e registry__baseUrl=https://registry.internal \
+  -e registry__username=myuser \
+  -e registry__password=mypassword \
+  -e registry__insecureSkipVerify=true \
+  ghcr.io/hikari-systems/registry-mcp:latest
+
+# Change log level and bind port
+docker run -p 8080:8080 \
+  -e registry__baseUrl=https://registry.example.com \
+  -e server__port=8080 \
+  -e log__level=debug \
+  ghcr.io/hikari-systems/registry-mcp:latest
 ```
 
 ### Field reference
