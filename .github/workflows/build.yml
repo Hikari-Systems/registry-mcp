@@ -124,18 +124,17 @@ jobs:
           docker manifest push --insecure localhost:5000/${{ env.REPO_NAME }}:${{ env.BRANCH_NAME }}
           docker manifest push --insecure localhost:5000/${{ env.REPO_NAME }}:latest
 
-      - name: Remove per-arch tags from GHCR
+      - name: Remove per-arch tags
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          REGISTRY_TOKEN=$(curl -sv \
-            -u "${{ github.actor }}:${GH_TOKEN}" \
-            "https://ghcr.io/token?service=ghcr.io&scope=repository:hikari-systems/${{ env.REPO_NAME }}:pull,push,delete" \
-            | jq -r '.token')
           for ARCH in amd64 arm64; do
-            curl -sv -X DELETE \
-              -H "Authorization: Bearer ${REGISTRY_TOKEN}" \
-              "https://ghcr.io/v2/hikari-systems/${{ env.REPO_NAME }}/manifests/${{ github.sha }}-${ARCH}"
-            curl -sv -X DELETE \
+            VERSION_ID=$(gh api "/orgs/hikari-systems/packages/container/${{ env.REPO_NAME }}/versions" \
+              --jq ".[] | select(.metadata.container.tags[] == \"${{ github.sha }}-${ARCH}\") | .id")
+            if [ -n "$VERSION_ID" ]; then
+              gh api -X DELETE "/orgs/hikari-systems/packages/container/${{ env.REPO_NAME }}/versions/${VERSION_ID}"
+              echo "Deleted GHCR version ${VERSION_ID} (${ARCH})"
+            fi
+            curl -sf -X DELETE \
               "http://localhost:5000/v2/${{ env.REPO_NAME }}/manifests/${{ github.sha }}-${ARCH}"
           done
