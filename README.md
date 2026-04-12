@@ -2,6 +2,149 @@
 
 An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI registry. Exposes registry operations as tools that an LLM can call — browsing repositories and tags, inspecting manifests, deleting tags, and migrating images.
 
+## Running
+
+### Docker
+
+```bash
+docker run -p 3000:3000 \
+  -e registry__baseUrl=https://registry.example.com \
+  -e registry__username=myuser \
+  -e registry__password=mypassword \
+  ghcr.io/hikari-systems/registry-mcp:latest
+```
+
+Mount a config file for more complete configuration (see [Configuration](#configuration)):
+
+```bash
+docker run -p 3000:3000 \
+  -v /path/to/config.json:/sandbox/config.json \
+  ghcr.io/hikari-systems/registry-mcp:latest
+```
+
+### docker-compose
+
+```yaml
+services:
+  registry-mcp:
+    image: ghcr.io/hikari-systems/registry-mcp:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - /path/to/configs/registry-mcp:/sandbox
+```
+
+### Binary
+
+```bash
+# From a config file in the working directory:
+CONFIG_PATH=/etc/registry-mcp/config.json ./registry-mcp
+
+# Or via env vars:
+registry__baseUrl=https://registry.example.com ./registry-mcp
+```
+
+---
+
+## Configuration
+
+Configuration is loaded in priority order (lowest → highest):
+
+1. `config.json` in the working directory (baked into the Docker image as defaults)
+2. `/sandbox/config.json` — deep-merged on top; intended for secrets and environment-specific values
+3. Environment variables using `__` as a path separator with exact camelCase key names
+
+### Full schema
+
+```json
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 3000
+  },
+  "registry": {
+    "baseUrl": "https://registry.example.com",
+    "username": "",
+    "password": "",
+    "bearerToken": "",
+    "insecureSkipVerify": false,
+    "caCertFile": ""
+  },
+  "log": {
+    "level": "info"
+  }
+}
+```
+
+### Field reference
+
+Keys use `:` as a depth separator, reflecting the JSON structure. When setting a key via an environment variable, replace `:` with `__` — e.g. `registry:baseUrl` becomes `registry__baseUrl=https://...`.
+
+| Key | Default | Description |
+|---|---|---|
+| `server:host` | `0.0.0.0` | Bind address |
+| `server:port` | `3000` | TCP port |
+| `registry:baseUrl` | *(required)* | Base URL of the registry, e.g. `https://registry.example.com`. No trailing slash. |
+| `registry:username` | `""` | HTTP Basic auth username. Used when `registry:bearerToken` is empty. |
+| `registry:password` | `""` | HTTP Basic auth password. |
+| `registry:bearerToken` | `""` | Static bearer token. Takes precedence over Basic auth when non-empty. |
+| `registry:insecureSkipVerify` | `false` | Skip TLS certificate verification. For self-signed registries only. |
+| `registry:caCertFile` | `""` | Path to a PEM CA certificate to add to the trust store. |
+| `log:level` | `info` | Tracing filter: `error`, `warn`, `info`, `debug`, `trace`. |
+
+---
+
+## Connecting to Claude or ChatGPT
+
+The server uses the [Streamable HTTP](https://spec.modelcontextprotocol.io/specification/basic/transports/#streamable-http) MCP transport. Once running, the MCP endpoint is:
+
+```
+http://<host>:<port>/mcp
+```
+
+LLM providers need a **publicly reachable HTTPS URL**. Use [ngrok](https://ngrok.com) to expose a local instance during development.
+
+### ngrok setup
+
+```bash
+# Install ngrok (https://ngrok.com/download), then:
+ngrok http 3000
+```
+
+ngrok prints a forwarding URL like:
+
+```
+Forwarding  https://abc123.ngrok-free.app -> http://localhost:3000
+```
+
+Your MCP URL is:
+
+```
+https://abc123.ngrok-free.app/mcp
+```
+
+### Registering with Claude.ai
+
+1. Go to **claude.ai → Settings → Integrations**
+2. Click **Add integration**
+3. Enter the MCP URL: `https://abc123.ngrok-free.app/mcp`
+4. Save — Claude will discover the available tools automatically
+
+### Registering with ChatGPT (Actions / Connectors)
+
+1. Go to **platform.openai.com → My GPTs** (or a custom GPT editor)
+2. Under **Actions**, click **Add action**
+3. Set the server URL to `https://abc123.ngrok-free.app/mcp`
+4. OpenAI will fetch the tool schema and expose the tools to the model
+
+> **Note:** Keep the ngrok session running while using the integration. The free tier generates a new URL on each restart — update the registration URL if it changes.
+
+### Permanent deployment
+
+For a stable URL, run the container behind a reverse proxy (nginx, Caddy, Traefik) with a real TLS certificate, or deploy behind an AWS ALB / CloudFront distribution.
+
+---
+
 ## Tools
 
 | Tool | Description |
@@ -11,7 +154,7 @@ An MCP (Model Context Protocol) server for managing a Docker Distribution / OCI 
 | `get_manifest` | Manifest details: media type, layers, total compressed size |
 | `get_repository_disk_usage` | Aggregate blob footprint for all tags, deduplicated |
 | `tag_manifest` | Create a new tag pointing at an existing tag or digest (equivalent to `docker tag`) |
-| `untag` | Remove a single tag reference without deleting the manifest or other tags pointing to the same digest |
+| `untag` | Remove one or more tag references (up to 20) without deleting the manifest or other tags pointing to the same digest |
 | `delete_tag` | Delete a manifest entirely by tag (dry-run by default, `confirm: true` to execute) |
 | `migrate` | Pull an image from an external registry and push it into this registry — no Docker daemon required, full multi-arch support |
 
@@ -333,24 +476,6 @@ Response:
 
 ---
 
-## Garbage Collection
-
-Docker Distribution uses a two-phase mark-and-sweep garbage collector. When you delete a tag or manifest via the API, only the reference is removed — the underlying layer blobs stay in storage. Disk space is not reclaimed until GC is run explicitly.
-
-GC must be performed by the registry binary itself, pointed at the same storage backend as the live registry. You cannot simply delete blobs from S3 or a filesystem directly.
-
-To run GC against a `registry:3` instance:
-
-```bash
-registry garbage-collect /etc/docker/registry/config.yml --delete-untagged
-```
-
-`storage.delete.enabled: true` must be present in the registry config, otherwise the registry API will also return `405 Method Not Allowed` for manifest deletes.
-
-For full details on how the collector works and how to configure it, see the [official garbage collection documentation](https://distribution.github.io/distribution/about/garbage-collection/).
-
----
-
 ### `migrate`
 
 Copies an image from any OCI-compatible registry into the managed registry using the OCI Distribution API directly. No Docker daemon is required. Supports single-platform images and multi-arch image indexes — for multi-arch, every platform's layers are copied and the index manifest is reassembled at the destination.
@@ -431,147 +556,6 @@ If the source registry requires credentials and none are provided, the tool retu
 
 This allows the LLM to prompt the user for credentials and retry rather than surfacing an opaque error.
 
-## Running
-
-### Docker
-
-```bash
-docker run -p 3000:3000 \
-  -e registry__baseUrl=https://registry.example.com \
-  -e registry__username=myuser \
-  -e registry__password=mypassword \
-  ghcr.io/hikari-systems/registry-mcp:latest
-```
-
-Mount a config file for more complete configuration (see [Configuration](#configuration)):
-
-```bash
-docker run -p 3000:3000 \
-  -v /path/to/config.json:/sandbox/config.json \
-  ghcr.io/hikari-systems/registry-mcp:latest
-```
-
-### docker-compose
-
-```yaml
-services:
-  registry-mcp:
-    image: ghcr.io/hikari-systems/registry-mcp:latest
-    ports:
-      - "3000:3000"
-    volumes:
-      - /path/to/configs/registry-mcp:/sandbox
-```
-
-### Binary
-
-```bash
-# From a config file in the working directory:
-CONFIG_PATH=/etc/registry-mcp/config.json ./registry-mcp
-
-# Or via env vars:
-registry__baseUrl=https://registry.example.com ./registry-mcp
-```
-
----
-
-## Configuration
-
-Configuration is loaded in priority order (lowest → highest):
-
-1. `config.json` in the working directory (baked into the Docker image as defaults)
-2. `/sandbox/config.json` — deep-merged on top; intended for secrets and environment-specific values
-3. Environment variables using `__` as a path separator with exact camelCase key names
-
-### Full schema
-
-```json
-{
-  "server": {
-    "host": "0.0.0.0",
-    "port": 3000
-  },
-  "registry": {
-    "baseUrl": "https://registry.example.com",
-    "username": "",
-    "password": "",
-    "bearerToken": "",
-    "insecureSkipVerify": false,
-    "caCertFile": ""
-  },
-  "log": {
-    "level": "info"
-  }
-}
-```
-
-### Field reference
-
-Keys use `:` as a depth separator, reflecting the JSON structure. When setting a key via an environment variable, replace `:` with `__` — e.g. `registry:baseUrl` becomes `registry__baseUrl=https://...`.
-
-| Key | Default | Description |
-|---|---|---|
-| `server:host` | `0.0.0.0` | Bind address |
-| `server:port` | `3000` | TCP port |
-| `registry:baseUrl` | *(required)* | Base URL of the registry, e.g. `https://registry.example.com`. No trailing slash. |
-| `registry:username` | `""` | HTTP Basic auth username. Used when `registry:bearerToken` is empty. |
-| `registry:password` | `""` | HTTP Basic auth password. |
-| `registry:bearerToken` | `""` | Static bearer token. Takes precedence over Basic auth when non-empty. |
-| `registry:insecureSkipVerify` | `false` | Skip TLS certificate verification. For self-signed registries only. |
-| `registry:caCertFile` | `""` | Path to a PEM CA certificate to add to the trust store. |
-| `log:level` | `info` | Tracing filter: `error`, `warn`, `info`, `debug`, `trace`. |
-
----
-
-## Connecting to Claude or ChatGPT
-
-The server uses the [Streamable HTTP](https://spec.modelcontextprotocol.io/specification/basic/transports/#streamable-http) MCP transport. Once running, the MCP endpoint is:
-
-```
-http://<host>:<port>/mcp
-```
-
-LLM providers need a **publicly reachable HTTPS URL**. Use [ngrok](https://ngrok.com) to expose a local instance during development.
-
-### ngrok setup
-
-```bash
-# Install ngrok (https://ngrok.com/download), then:
-ngrok http 3000
-```
-
-ngrok prints a forwarding URL like:
-
-```
-Forwarding  https://abc123.ngrok-free.app -> http://localhost:3000
-```
-
-Your MCP URL is:
-
-```
-https://abc123.ngrok-free.app/mcp
-```
-
-### Registering with Claude.ai
-
-1. Go to **claude.ai → Settings → Integrations**
-2. Click **Add integration**
-3. Enter the MCP URL: `https://abc123.ngrok-free.app/mcp`
-4. Save — Claude will discover the available tools automatically
-
-### Registering with ChatGPT (Actions / Connectors)
-
-1. Go to **platform.openai.com → My GPTs** (or a custom GPT editor)
-2. Under **Actions**, click **Add action**
-3. Set the server URL to `https://abc123.ngrok-free.app/mcp`
-4. OpenAI will fetch the tool schema and expose the tools to the model
-
-> **Note:** Keep the ngrok session running while using the integration. The free tier generates a new URL on each restart — update the registration URL if it changes.
-
-### Permanent deployment
-
-For a stable URL, run the container behind a reverse proxy (nginx, Caddy, Traefik) with a real TLS certificate, or deploy behind an AWS ALB / CloudFront distribution.
-
 ---
 
 ## Building from source
@@ -594,3 +578,21 @@ docker compose -f tests/docker-compose.test.yml down -v
 ```
 
 The compose stack starts MinIO (S3-compatible storage) and a `registry:3` instance backed by it, with deletions enabled.
+
+---
+
+## Garbage Collection
+
+Docker Distribution uses a two-phase mark-and-sweep garbage collector. When you delete a tag or manifest via the API, only the reference is removed — the underlying layer blobs stay in storage. Disk space is not reclaimed until GC is run explicitly.
+
+GC must be performed by the registry binary itself, pointed at the same storage backend as the live registry. You cannot simply delete blobs from S3 or a filesystem directly.
+
+To run GC against a `registry:3` instance:
+
+```bash
+registry garbage-collect /etc/docker/registry/config.yml --delete-untagged
+```
+
+`storage.delete.enabled: true` must be present in the registry config, otherwise the registry API will also return `405 Method Not Allowed` for manifest deletes.
+
+For full details on how the collector works and how to configure it, see the [official garbage collection documentation](https://distribution.github.io/distribution/about/garbage-collection/).
