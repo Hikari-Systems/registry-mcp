@@ -128,14 +128,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
-          REGISTRY_TOKEN=$(curl -sf \
+          REGISTRY_TOKEN=$(curl -sv \
             -u "${{ github.actor }}:${GH_TOKEN}" \
             "https://ghcr.io/token?service=ghcr.io&scope=repository:hikari-systems/${{ env.REPO_NAME }}:pull,push,delete" \
             | jq -r '.token')
           for ARCH in amd64 arm64; do
-            curl -sf -X DELETE \
+            curl -sv -X DELETE \
               -H "Authorization: Bearer ${REGISTRY_TOKEN}" \
               "https://ghcr.io/v2/hikari-systems/${{ env.REPO_NAME }}/manifests/${{ github.sha }}-${ARCH}"
-            curl -sf -X DELETE \
+            curl -sv -X DELETE \
               "http://localhost:5000/v2/${{ env.REPO_NAME }}/manifests/${{ github.sha }}-${ARCH}"
           done
