@@ -15,7 +15,7 @@ docker run -p 3000:3000 \
   -e registry__baseUrl=https://registry.example.com \
   -e registry__username=myuser \
   -e registry__password=mypassword \
-  ghcr.io/hikari-systems/registry-mcp:latest
+  hikarisystems/registry-mcp
 ```
 
 Mount a config file for more complete configuration (see [Configuration](#configuration)):
@@ -23,7 +23,7 @@ Mount a config file for more complete configuration (see [Configuration](#config
 ```bash
 docker run -p 3000:3000 \
   -v /path/to/config.json:/sandbox/config.json \
-  ghcr.io/hikari-systems/registry-mcp:latest
+  hikarisystems/registry-mcp
 ```
 
 ### docker-compose
@@ -31,7 +31,7 @@ docker run -p 3000:3000 \
 ```yaml
 services:
   registry-mcp:
-    image: ghcr.io/hikari-systems/registry-mcp:latest
+    image: hikarisystems/registry-mcp
     ports:
       - "3000:3000"
     volumes:
@@ -90,13 +90,13 @@ docker run -p 3000:3000 \
   -e registry__baseUrl=https://registry.example.com \
   -e registry__username=myuser \
   -e registry__password=mypassword \
-  ghcr.io/hikari-systems/registry-mcp:latest
+  hikarisystems/registry-mcp
 
 # Static bearer token instead of basic auth
 docker run -p 3000:3000 \
   -e registry__baseUrl=https://registry.example.com \
   -e registry__bearerToken=mytoken \
-  ghcr.io/hikari-systems/registry-mcp:latest
+  hikarisystems/registry-mcp
 
 # Self-signed certificate registry
 docker run -p 3000:3000 \
@@ -104,14 +104,14 @@ docker run -p 3000:3000 \
   -e registry__username=myuser \
   -e registry__password=mypassword \
   -e registry__insecureSkipVerify=true \
-  ghcr.io/hikari-systems/registry-mcp:latest
+  hikarisystems/registry-mcp
 
 # Change log level and bind port
 docker run -p 8080:8080 \
   -e registry__baseUrl=https://registry.example.com \
   -e server__port=8080 \
   -e log__level=debug \
-  ghcr.io/hikari-systems/registry-mcp:latest
+  hikarisystems/registry-mcp
 ```
 
 ### Field reference
