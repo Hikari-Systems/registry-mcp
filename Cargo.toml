@@ -26,7 +26,7 @@ reqwest            = { version = "0.12", default-features = false, features = ["
 anyhow             = "1"
 base64             = "0.22"
 thiserror          = "2"
-hs-utils           = { git = "https://github.com/Hikari-Systems/hs-utils-rs", tag = "v0.2.6", default-features = false }
+hs-utils           = { git = "https://github.com/Hikari-Systems/hs-utils-rs", tag = "v0.2.7", default-features = false }
 tracing            = "0.1"
 futures-util       = "0.3"
 url                = "2"
