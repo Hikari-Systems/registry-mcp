@@ -49,21 +49,19 @@ pub async fn untag(
         match registry.delete_tag_reference(&params.repository, tag).await {
             Ok(()) => {
                 removed.push(tag.clone());
-                ctx.peer.notify_progress(ProgressNotificationParam {
-                    progress_token: ProgressToken(NumberOrString::String("untag".into())),
-                    progress: (i + 1) as f64,
-                    total: Some(total as f64),
-                    message: Some(format!("Removed '{tag}' ({}/{total})", i + 1)),
-                }).await.ok();
+                ctx.peer.notify_progress(
+                    ProgressNotificationParam::new(ProgressToken(NumberOrString::String("untag".into())), (i + 1) as f64)
+                        .with_total(total as f64)
+                        .with_message(format!("Removed '{tag}' ({}/{total})", i + 1)),
+                ).await.ok();
             }
             Err(e) => {
                 failed.push(UntagFailure { tag: tag.clone(), error: e.to_string() });
-                ctx.peer.notify_progress(ProgressNotificationParam {
-                    progress_token: ProgressToken(NumberOrString::String("untag".into())),
-                    progress: (i + 1) as f64,
-                    total: Some(total as f64),
-                    message: Some(format!("Failed '{tag}': {e} ({}/{total})", i + 1)),
-                }).await.ok();
+                ctx.peer.notify_progress(
+                    ProgressNotificationParam::new(ProgressToken(NumberOrString::String("untag".into())), (i + 1) as f64)
+                        .with_total(total as f64)
+                        .with_message(format!("Failed '{tag}': {e} ({}/{total})", i + 1)),
+                ).await.ok();
             }
         }
     }

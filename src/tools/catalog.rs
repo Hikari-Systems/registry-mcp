@@ -1,4 +1,4 @@
-use rmcp::{ErrorData, model::{CallToolResult, Content}};
+use rmcp::{ErrorData, model::{CallToolResult, ContentBlock}};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -83,7 +83,7 @@ pub async fn list_tags(
 pub fn ok_json<T: serde::Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
     let text = serde_json::to_string_pretty(value)
         .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 /// Map a RegistryError to an MCP ErrorData.

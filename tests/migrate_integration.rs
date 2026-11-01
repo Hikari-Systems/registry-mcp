@@ -190,10 +190,7 @@ async fn test_migrate_requires_auth_soft_failure() {
         .expect("tool should return Ok even on 401");
 
     let content = &result.content[0];
-    let json_str = match &content.raw {
-        rmcp::model::RawContent::Text(t) => t.text.clone(),
-        _ => panic!("expected text content"),
-    };
+    let json_str = content.as_text().expect("expected text content").text.clone();
     let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
     println!("requires_auth response: {val:#}");
